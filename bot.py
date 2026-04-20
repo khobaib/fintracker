@@ -28,6 +28,8 @@
 # =============================================================================
 
 import os
+from dotenv import load_dotenv
+load_dotenv()  # loads .env file into environment variables
 import re
 import json
 import sqlite3
@@ -77,7 +79,7 @@ def init_db():
         "SELECT count(*) FROM sqlite_master WHERE type='table'"
     ).fetchone()[0]
     if tables < 5:
-        with open("schema_v3.sql") as f:
+        with open("schema_v3_final.sql", encoding='utf-8') as f:
             conn.executescript(f.read())
         logger.info("Database initialized from schema_v3.sql")
     conn.close()

@@ -948,7 +948,7 @@ def format_review_summary(parsed: ParsedPaste) -> str:
     lines_out = []
 
     # Header
-    date_str = parsed.entry_date.strftime("%-d %B")
+    date_str = parsed.entry_date.strftime("%d %B").lstrip("0")
     city_str = parsed.default_city.replace('_', ' ').title()
     header = f"📅 {date_str}  📍 {city_str}"
     lines_out.append(header)
