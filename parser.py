@@ -342,7 +342,12 @@ def parse_amount_expression(expr: str) -> tuple[Optional[float], Optional[str]]:
         return None, None
 
     try:
-        result = eval(safe)  # safe: only numeric operators
+        # Use float() for simple numbers, eval only for expressions with operators
+        # Avoids SyntaxWarning in Python 3.14 when eval gets a plain integer
+        if re.search(r'[+\-*/]', safe):
+            result = eval(compile(safe, "<fintracker>", "eval"))
+        else:
+            result = float(safe)
         return float(result), currency
     except Exception:
         # Try just extracting first number
@@ -499,8 +504,8 @@ def parse_third_party_paid(text: str) -> tuple[str, Optional[str], Optional[int]
     Detect "(X paid)" pattern.
     Returns: (text_without_paid_bracket, paid_by_name, original_bill_bdt)
 
-    "(raya paid)"   → my expense = 0, paid_by = "Raya"
-    "- raya paid"   → my expense = 0, paid_by = "Raya" (no amount)
+    "(friend_xyz paid)"   → my expense = 0, paid_by = "Friend_xyz"
+    "- friend_xyz paid"   → my expense = 0, paid_by = "Friend_xyz" (no amount)
     """
     # Pattern: ends with "(name paid)" or "(name paid, ...)"
     m = re.search(r'\(([^)]+?\s+paid[^)]*)\)', text, re.I)
@@ -545,7 +550,7 @@ def parse_cashback(text: str) -> tuple[str, Optional[int]]:
 def parse_prefix_tag(text: str) -> tuple[str, Optional[str]]:
     """
     Detect [Name] prefix: paid on behalf of someone.
-    "[Raya] bike to mirpur" → ("bike to mirpur", "Raya")
+    "[Friend_xyz] bike to destination" → ("bike to destination", "Friend_xyz")
     "[G] car to bashundhara" → ("car to bashundhara", "G")
     """
     m = re.match(r'^\[([^\]]+)\]\s*', text)
@@ -657,7 +662,11 @@ def run_rules_engine(
 
         matched = False
         if match_type == 'keyword':
-            matched = pattern.lower() in description_lower
+            # keyword = whole-word match using  word boundary
+            try:
+                matched = bool(re.search(r'\b' + re.escape(pattern.lower()) + r'\b', description_lower))
+            except re.error:
+                matched = pattern.lower() in description_lower
         elif match_type == 'regex':
             try:
                 matched = bool(re.search(pattern, description_lower))
@@ -728,29 +737,39 @@ def parse_line(
     if cashback:
         result.cashback_bdt = cashback
 
-    # --- Step 5: Payment method from bracket ---
-    line, payment_slug, platform, service = parse_payment_bracket(line)
-    result.payment_slug     = payment_slug
-    result.platform         = platform
-    result.transport_service = service
-
-    # --- Step 6: Transfer detection (on original lowercased full line) ---
+    # --- Step 5: Transfer detection FIRST (before payment parsing) ---
+    # Transfers must be detected on raw_line before brackets are stripped,
+    # so that notes like "(bftn, received on 26 April)" are preserved.
     is_transfer, from_acc, to_acc = parse_transfer(raw_line.lower())
     if is_transfer:
-        result.tx_type      = "transfer"
+        result.tx_type       = "transfer"
         result.transfer_from = from_acc
         result.transfer_to   = to_acc
         result.match_source  = MatchSource.STRUCTURAL
         result.confidence    = 1.0
-        result.needs_review  = False
-        # Parse amount from line for transfers too
+        # Parse amount from the current line (after tags stripped, before bracket parsing)
         _, amt_str = split_description_and_amount(line)
         if amt_str:
             amt, curr = parse_amount_expression(amt_str)
             if amt is not None:
                 result.estimated_amount_bdt = round(amt)
-        result.description = line.strip()
+                result.needs_review  = False
+            else:
+                # No parseable amount — flag for review
+                result.needs_review  = True
+                result.review_reason = "no_amount"
+        else:
+            result.needs_review  = True
+            result.review_reason = "no_amount"
+        # Keep full raw_line as description for transfers (no bracket stripping)
+        result.description = raw_line.strip()
         return result
+
+    # --- Step 6: Payment method from bracket (expenses only, not transfers) ---
+    line, payment_slug, platform, service = parse_payment_bracket(line)
+    result.payment_slug      = payment_slug
+    result.platform          = platform
+    result.transport_service = service
 
     # --- Step 7: Split description and amount ---
     description, amt_str = split_description_and_amount(line)
@@ -786,12 +805,22 @@ def parse_line(
                 result.amount_bdt = round(raw_bdt)
     else:
         # No amount found
-        result.amount_bdt    = 0
-        result.needs_review  = True
-        result.review_reason = "no_amount"
+        # Special case: metro card payment with no amount = prepaid usage, store as 0
+        # The actual expense was recorded when the card was recharged
+        if result.payment_slug == "metro_card":
+            result.amount_bdt   = 0
+            result.needs_review = False
+        else:
+            # All other expenses: missing amount must be flagged for review
+            # Do NOT default to 0. 0 is only valid when explicitly written.
+            result.amount_bdt    = None
+            result.needs_review  = True
+            result.review_reason = "no_amount"
 
     # --- Step 9: Run rules engine ---
-    desc_lower = (description or line).lower()
+    # Use the full raw line (before payment bracket was stripped) so rules like
+    # "metro card recharge" still match even though "metro card" was parsed as payment
+    desc_lower = raw_line.lower()
     rule_type, rule_purpose, rule_pay_override, rule_conf = run_rules_engine(
         desc_lower, db_conn
     )
@@ -942,7 +971,7 @@ def format_review_summary(parsed: ParsedPaste) -> str:
     6. ✅ hotel pondok ijo — accommodation — 1534 BDT (12.52 USD) — EBL card  [trip]
     7. 🏠 rent dhaka — accommodation — 25000 BDT — cash  [home override]
     8. ❓ others entry — ? — 500 BDT — cash  [needs AI]
-    9. 💸 fuchka — food bill — 0 BDT (Raya paid, bill: 100)
+    9. 💸 fuchka — food bill — 0 BDT (Friend_xyz paid, bill: 100)
     ──────────────────────────────────────
     """
     lines_out = []
@@ -955,7 +984,8 @@ def format_review_summary(parsed: ParsedPaste) -> str:
 
     tx_count = len([l for l in parsed.lines if l.tx_type != "transfer"])
     tr_count = len([l for l in parsed.lines if l.tx_type == "transfer"])
-    needs_review = sum(1 for l in parsed.lines if l.needs_review)
+    review_lines = [l for l in parsed.lines if l.needs_review]
+    needs_review = len(review_lines)
 
     summary = f"Found *{len(parsed.lines)} entries*"
     if tr_count:
@@ -964,6 +994,16 @@ def format_review_summary(parsed: ParsedPaste) -> str:
         summary += f" — *{needs_review} need your review*"
     summary += ". Reply with line number to correct, or *save all* to confirm."
     lines_out.append(summary)
+
+    # If any lines need review, list them explicitly
+    if review_lines:
+        review_nums = ", ".join(f"*{l.line_number}*" for l in review_lines)
+        reason_parts = []
+        for l in review_lines:
+            reason = l.review_reason or "check needed"
+            reason_parts.append(f"*{l.line_number}* — {reason.replace('_', ' ')}")
+        lines_out.append(f"⚠️  Lines needing review: {' | '.join(reason_parts)}")
+
     lines_out.append("")
 
     for pl in parsed.lines:
@@ -986,7 +1026,13 @@ def format_review_summary(parsed: ParsedPaste) -> str:
 
         # Amount
         if pl.original_currency:
-            amt_str = f"{pl.original_amount} {pl.original_currency} → ? BDT"
+            if pl.amount_bdt is not None:
+                # Rate resolved — show converted amount with original in brackets
+                orig = f"{pl.original_amount:g} {pl.original_currency}"
+                amt_str = f"{pl.amount_bdt:,} BDT ({orig})"
+            else:
+                # Rate not set yet — show original and prompt
+                amt_str = f"{pl.original_amount:g} {pl.original_currency} → ? BDT"
         elif pl.amount_bdt == 0 and pl.paid_by:
             amt_str = f"0 BDT (bill: {pl.bill_amount_bdt or '?'}, {pl.paid_by} paid)"
         elif pl.amount_bdt is not None:
@@ -994,35 +1040,44 @@ def format_review_summary(parsed: ParsedPaste) -> str:
         else:
             amt_str = "? BDT"
 
-        # Purpose
+        # Transfers: show FULL raw description + amount if known
         if pl.tx_type == "transfer":
-            purpose_str = f"transfer  {pl.transfer_from or '?'} → {pl.transfer_to or '?'}"
-        elif pl.purpose_slug:
-            purpose_str = pl.purpose_slug.replace('_', ' ')
+            full_desc = (pl.description or pl.raw_line)
+            amt = pl.amount_bdt if pl.amount_bdt is not None else getattr(pl, "estimated_amount_bdt", None)
+            if amt:
+                line_out = f"{icon} *{pl.line_number}.* {full_desc} — transfer — {amt:,} BDT"
+            else:
+                line_out = f"{icon} *{pl.line_number}.* {full_desc} — transfer"
+            lines_out.append(line_out)
+            continue
+
+        # Purpose
+        if pl.purpose_slug:
+            purpose_str = pl.purpose_slug.replace("_", " ")
         else:
             purpose_str = "? (needs classification)"
 
         # Payment
-        pay_str = (pl.payment_slug or "?").replace('_', ' ')
+        pay_str = (pl.payment_slug or "?").replace("_", " ")
 
         # Flags
         flags = []
         if pl.purpose_override:      flags.append("tag override")
         if pl.is_home_override:      flags.append("home override")
         if pl.paid_for:              flags.append(f"paid for {pl.paid_for}")
-        if pl.cashback_bdt:          flags.append(f"cashback {pl.cashback_bdt}")
-        if pl.review_reason:         flags.append(pl.review_reason)
+        if pl.cashback_bdt:          flags.append(f"cashback -{pl.cashback_bdt} BDT")
+        if pl.review_reason:
+            # Don't show low_confidence if there's a more specific reason
+            if pl.review_reason.startswith('low_confidence') and len(flags) == 0:
+                flags.append(pl.review_reason)
+            elif not pl.review_reason.startswith('low_confidence'):
+                flags.append(pl.review_reason)
         if pl.parse_error:           flags.append(f"ERROR: {pl.parse_error}")
 
         flag_str = f"  [{', '.join(flags)}]" if flags else ""
 
-        # Confidence badge
-        if pl.match_source == MatchSource.RULE and not pl.needs_review:
-            conf_badge = ""
-        elif pl.confidence > 0:
-            conf_badge = f" ({pl.confidence:.0%})"
-        else:
-            conf_badge = ""
+        # No confidence badge in review — purpose name is enough
+        conf_badge = ""
 
         line_out = (
             f"{icon} *{pl.line_number}.* {desc} — "
@@ -1068,8 +1123,12 @@ def apply_exchange_rates(parsed: ParsedPaste, db_conn: sqlite3.Connection) -> li
                 raw_bdt = pl.original_amount * rate
                 if pl.cashback_bdt:
                     raw_bdt = max(0, raw_bdt - pl.cashback_bdt)
-                pl.amount_bdt        = round(raw_bdt)
+                pl.amount_bdt         = round(raw_bdt)
                 pl.exchange_rate_used = rate
+                # Amount resolved — clear any rate-related review flags
+                if pl.review_reason and pl.review_reason.startswith('low_confidence'):
+                    pl.needs_review  = False
+                    pl.review_reason = None
             else:
                 pl.needs_review  = True
                 pl.review_reason = f"no_rate_for_{pl.original_currency}"

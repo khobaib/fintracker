@@ -126,7 +126,8 @@ INSERT OR IGNORE INTO purpose_taxonomy (name, slug) VALUES
     ('Gift',            'gift'),
     ('Household',       'household'),
     ('Others',          'others'),
-    ('Tour bill',       'tour_bill');    -- legacy import only
+    ('Tour bill',       'tour_bill'),    -- legacy import only
+    ('Digital product', 'digital_product'); -- subscriptions: Spotify, Claude, Slack, Google One
 
 
 -- =============================================================================
@@ -442,6 +443,10 @@ CREATE TABLE IF NOT EXISTS classifier_rules (
 INSERT OR IGNORE INTO classifier_rules
     (pattern, match_type, tx_type, purpose_slug, payment_slug, transport_service, confidence, priority, notes)
 VALUES
+    -- TREAT KEYWORD: highest priority food override
+    -- If "treat" appears anywhere in the line, it's a treat not a food bill
+    ('treat',   'keyword', 'expense', 'treat', NULL, NULL, 1.0, 3, 'Treat keyword override'),
+
     -- STRUCTURAL: transfers
     ('to bkash|to ebl|to scb|to dbbl|to nagad|ebl to|bkash to|scb to|dbbl to',
         'regex',    'transfer', NULL,           NULL,           NULL,       1.0,  5,  'Account transfer'),
@@ -451,6 +456,15 @@ VALUES
     ('\\(scb\\)',   'regex',    NULL, NULL, 'scb_card',     NULL, 1.0,  5, 'SCB card bracket'),
     ('\\(dbbl\\)',  'regex',    NULL, NULL, 'dbbl_card',    NULL, 1.0,  5, 'DBBL card bracket'),
     ('\\(bkash\\)', 'regex',    NULL, NULL, 'bkash',        NULL, 1.0,  5, 'bKash bracket'),
+
+    -- MOBILE/INTERNET RECHARGE: must be before generic recharge rule
+    ('mobile.*recharge|recharge.*mobile|internet.*recharge|recharge.*internet|data.*recharge|recharge.*data|sim.*recharge',
+        'regex', 'expense', 'mobile_expense', NULL, NULL, 1.0, 7, 'Mobile and internet recharge'),
+
+    -- METRO CARD RECHARGE: commuting, not mobile_expense
+    -- Must be before the generic "recharge" mobile rule
+    ('metro.*recharge|recharge.*metro',
+        'regex', 'expense', 'commuting', 'metro_card', NULL, 1.0, 8, 'Metro card recharge'),
 
     -- TRANSPORT
     ('uber',        'keyword',  'expense', 'commuting', 'cash', 'uber',     1.0, 10, 'Uber ride, cash default'),
@@ -464,6 +478,20 @@ VALUES
     ('bike to',     'keyword',  'expense', 'commuting', 'cash', 'uber',     1.0,  5, 'Bike/office'),
     ('flight',      'keyword',  'expense', 'commuting', NULL,   NULL,       1.0, 10, 'Flight'),
 
+    -- SHOPPING: electronics, accessories, clothing, household items
+    ('cable|charger|adapter|earphone|headphone|keyboard|mouse|bag|wallet|shoe|sandal',
+        'regex', 'expense', 'shopping', NULL, NULL, 0.9, 22, 'Accessories and peripherals'),
+    ('shirt|pant|trouser|jacket|hoodie|tshirt|t-shirt|dress|sari|saree|lungi|kameez|punjabi',
+        'regex', 'expense', 'shopping', NULL, NULL, 0.9, 22, 'Clothing'),
+    ('\bphone\b|\btablet\b|\bwatch\b|\bspeaker\b|\bcamera\b|\busb\b|\bhdmi\b',
+        'regex', 'expense', 'shopping', NULL, NULL, 0.85, 22, 'Electronics'),
+
+    -- BANK / MFS SERVICE CHARGES
+    -- Statement charges, solvency certificates, service fees from banks/MFS
+    -- Bank fees: specific terms only — NOT "service charge" alone (too ambiguous)
+    ('statement charge|statement fee|solvency|certificate|account fee|annual fee|card fee|bank charge|maintenance fee|bank statement',
+        'regex', 'expense', 'others', NULL, NULL, 1.0, 14, 'Bank and MFS service fees'),
+
     -- KNOWN MERCHANTS
     ('shajgoj|chaldal|unimart|meena bazar|agora|lavender|shopno',
         'regex',    'expense', 'grocery',  NULL, NULL, 1.0, 15, 'Supermarkets'),
@@ -471,6 +499,30 @@ VALUES
         'regex',    'expense', 'medical',  NULL, NULL, 1.0, 15, 'Pharmacy'),
     ('doctor|clinic|hospital|diagnostic|lab test|labs',
         'regex',    'expense', 'medical',  NULL, NULL, 0.95,15, 'Medical services'),
+
+    -- MEALS: always food_bill at full confidence unless "treat" keyword is present
+    -- Generic food words — used as wrappers: "Food (sate ratu)", "snacks X", "food bill X"
+    ('\bfood\b|snacks?|meal|tiffin|iftar|sehri',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 24, 'Generic food words'),
+    -- "treat" rule (priority 3) fires first and overrides these
+    ('breakfast|sehri|seheri',
+        'regex',    'expense', 'food_bill', 'cash', NULL, 1.0, 25, 'Breakfast'),
+    ('lunch|brunch|khichuri|khichri|biryani|tehari|khana',
+        'regex',    'expense', 'food_bill', NULL,   NULL, 1.0, 25, 'Lunch/meals'),
+    ('dinner|supper|iftar',
+        'regex',    'expense', 'food_bill', NULL,   NULL, 1.0, 25, 'Dinner'),
+    ('restaurant|cafe|coffee shop|bakery|bakeray|fast food',
+        'regex',    'expense', 'food_bill', NULL,   NULL, 1.0, 25, 'Restaurants'),
+
+    -- COMMON FOOD ITEMS: unambiguous, always food_bill
+    ('kabab|kebab|burger|pizza|pasta|shawarma|shawrma|noodle|sushi|sandwich|hotdog',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 28, 'Common food items'),
+    ('cake|pastry|cookie|biscuit|brownie|waffle|donut|pudding|ice.?cream|chocolate',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 28, 'Desserts and sweets'),
+    ('biriyani|biryani|kacchi|tehari|halim|nihari|nehari|khichuri|polao|rezala',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 28, 'Bengali/Mughlai dishes'),
+    ('chips|crisps|popcorn|nachos|pretzel',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 28, 'Packaged snacks'),
 
     -- FOOD & BEVERAGES
     ('fuchka|chotpoti|bhelpuri',
@@ -481,8 +533,10 @@ VALUES
         'regex',    'expense', 'food_bill',    'cash', NULL, 0.9, 20, 'Fresh fruit'),
     ('water|mineral water',
         'regex',    'expense', 'beverages',    'cash', NULL, 0.9, 20, 'Water'),
-    ('tea|cha|coffee',
-        'regex',    'expense', 'beverages',    'cash', NULL, 0.85,20, 'Hot drinks'),
+    ('tea',     'keyword', 'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Tea'),
+    ('cha',     'keyword', 'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Cha (tea)'),
+    ('chai',    'keyword', 'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Chai (tea)'),
+    ('coffee',  'keyword', 'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Coffee'),
     ('juice',
         'keyword',  'expense', 'beverages',    'cash', NULL, 0.9, 20, 'Juice'),
 
@@ -491,7 +545,7 @@ VALUES
         'regex',    'expense', 'household',    'cash', NULL, 0.9, 20, 'Household items'),
 
     -- MOBILE / INTERNET
-    ('recharge|internet pack|mb |data pack|sim|robi|grameenphone|gp |banglalink|teletalk',
+    ('recharge|internet pack|mb |data pack|sim|robi|grameenphone|gp |banglalink|teletalk|sms charge|mobile charge|mobile data charge|data charge',
         'regex',    'expense', 'mobile_expense', NULL, NULL, 0.9, 20, 'Mobile/internet'),
 
     -- ACCOMMODATION
@@ -499,6 +553,10 @@ VALUES
         'regex',    'expense', 'accommodation', NULL, NULL, 0.95,20, 'Accommodation'),
     ('rent|service charge|utility bill|internet.*bill|garbage.*bill|ac rent|advance payment for room',
         'regex',    'expense', 'accommodation', NULL, NULL, 0.95,15, 'Rent and home bills'),
+
+    -- DIGITAL PRODUCTS / SUBSCRIPTIONS
+    ('spotify|netflix|youtube premium|google one|claude|chatgpt|openai|slack|notion|dropbox|adobe|microsoft 365|apple',
+        'regex',    'expense', 'digital_product', NULL, NULL, 1.0, 15, 'Digital subscriptions'),
 
     -- RECREATION
     ('park ticket|entry ticket|museum|zoo|aquarium|theme park',

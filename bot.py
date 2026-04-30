@@ -294,23 +294,25 @@ def commit_line(
     return tx_id
 
 
-def commit_session(user_id: str, conn: sqlite3.Connection) -> tuple[int, int]:
+def commit_session(user_id: str, conn: sqlite3.Connection) -> tuple[int, int, list[int]]:
     """
     Commit all confirmed lines in the session.
-    Returns (saved_count, skipped_count).
+    Returns (saved_count, skipped_count, saved_ids).
     """
     session = get_session(user_id)
     if not session:
-        return 0, 0
+        return 0, 0, []
 
     parsed:  ParsedPaste   = session["parsed"]
     db_session_id: int     = session["db_session_id"]
 
     saved = skipped = 0
+    saved_ids = []
     for pl in parsed.lines:
         tx_id = commit_line(pl, session, conn, db_session_id)
         if tx_id:
             saved += 1
+            saved_ids.append(tx_id)
         else:
             skipped += 1
 
@@ -323,7 +325,7 @@ def commit_session(user_id: str, conn: sqlite3.Connection) -> tuple[int, int]:
     conn.commit()
 
     clear_session(user_id)
-    return saved, skipped
+    return saved, skipped, saved_ids
 
 # =============================================================================
 # CORRECTION HANDLER
@@ -349,6 +351,7 @@ def apply_correction(pl: ParsedLine, correction_text: str, conn: sqlite3.Connect
         pl.purpose_override = True
         pl.user_corrected   = True
         pl.needs_review     = False
+        pl.review_reason    = None   # clear stale reason
         changes.append(f"purpose: {old} → {purpose_row['slug']}")
         return ", ".join(changes)
 
@@ -362,6 +365,7 @@ def apply_correction(pl: ParsedLine, correction_text: str, conn: sqlite3.Connect
         pl.payment_slug   = pay_row["slug"]
         pl.user_corrected = True
         pl.needs_review   = False
+        pl.review_reason  = None
         changes.append(f"payment: {old} → {pay_row['slug']}")
         return ", ".join(changes)
 
@@ -421,6 +425,13 @@ def handle_message(message, say, client):
     conn = get_db()
 
     try:
+        # --- BULK ACTUAL SESSION: confirm/cancel for /actual ID/date range ---
+        bulk_key = f"bulk_{user_id}"
+        bulk_session = _sessions.get(bulk_key)
+        if bulk_session and bulk_session.get("type") == "bulk_actual":
+            _handle_bulk_actual(user_id, text, bulk_key, bulk_session, say, conn)
+            return
+
         # --- ACTIVE SESSION: route to correction or save ---
         session = get_session(user_id)
         if session:
@@ -526,6 +537,49 @@ def handle_message(message, say, client):
         conn.close()
 
 
+def _handle_bulk_actual(
+    user_id: str, text: str, bulk_key: str,
+    session: dict, say, conn: sqlite3.Connection
+):
+    """Handle confirm/cancel for bulk /actual ID-range or date-range updates."""
+    text_low = text.strip().lower()
+
+    if text_low in ("cancel", "abort", "no"):
+        _sessions.pop(bulk_key, None)
+        say("Cancelled. No changes saved.")
+        return
+
+    if text_low not in ("confirm", "yes", "ok"):
+        say("Reply *confirm* to save the updates, or *cancel* to abort.")
+        return
+
+    # Confirmed — apply updates
+    rate     = session["rate"]
+    tx_ids   = session["tx_ids"]
+    currency = session["currency"]
+    updated  = 0
+
+    for tx_id in tx_ids:
+        tx = conn.execute(
+            "SELECT original_amount FROM transactions WHERE id = ?", (tx_id,)
+        ).fetchone()
+        if tx and tx["original_amount"]:
+            actual = round(tx["original_amount"] * rate)
+            conn.execute(
+                "UPDATE transactions SET actual_amount_bdt = ? WHERE id = ?",
+                (actual, tx_id)
+            )
+            updated += 1
+
+    conn.commit()
+    _sessions.pop(bulk_key, None)
+    say(
+        f"\u2705 Updated *{updated} transaction{'s' if updated != 1 else ''}* "
+        f"with actual BDT amounts.\n"
+        f"Rate used: *1 {currency} = {rate:.6f} BDT* ({session['rate_display']})"
+    )
+
+
 def _handle_session_input(user_id: str, text: str, say, conn: sqlite3.Connection):
     """Handle input when a review session is active."""
     session  = get_session(user_id)
@@ -534,19 +588,55 @@ def _handle_session_input(user_id: str, text: str, say, conn: sqlite3.Connection
 
     # --- SAVE ALL ---
     if text_low in ("save all", "save", "ok", "confirm", "yes", "done", "✅"):
-        saved, skipped = commit_session(user_id, conn)
-        msg = f"✅ Saved *{saved}* transaction{'s' if saved != 1 else ''}."
+        # Check for unresolved entries before saving
+        unresolved = [
+            pl for pl in parsed.lines
+            if pl.tx_type == "expense" and (
+                pl.purpose_slug is None or
+                pl.amount_bdt is None
+            )
+        ]
+        if unresolved:
+            lines_desc = ", ".join(
+                f"*{pl.line_number}* ({pl.raw_line[:30]})"
+                for pl in unresolved
+            )
+            n = len(unresolved)
+            word = "entry" if n == 1 else "entries"
+            say(
+                f"\u26a0\ufe0f {n} {word} still need attention: {lines_desc}\n"
+                f"Fix them first, or type *save anyway* to save everything including unclassified entries."
+            )
+            return
+
+        saved, skipped, saved_ids = commit_session(user_id, conn)
+        msg = f"\u2705 Saved *{saved}* transaction{'s' if saved != 1 else ''}."
         if skipped:
             msg += f" Skipped {skipped} (parse errors)."
-        # Show quick stats
         total = sum(
             pl.amount_bdt or 0
             for pl in parsed.lines
             if pl.tx_type == "expense"
         )
         msg += f"\nTotal expenses: *{total:,} BDT*"
+        if saved_ids:
+            id_range = f"#{saved_ids[0]}" if len(saved_ids) == 1 else f"#{saved_ids[0]}–#{saved_ids[-1]}"
+            msg += f"\nTransaction IDs: *{id_range}* — use these with `/actual` to update bank amounts"
         say(msg)
         return
+
+    # --- SAVE ANYWAY (force save even with unresolved) ---
+    if text_low == "save anyway":
+        saved, skipped, saved_ids = commit_session(user_id, conn)
+        msg = f"✅ Saved *{saved}* transaction{'s' if saved != 1 else ''} (including unclassified)."
+        total = sum(pl.amount_bdt or 0 for pl in parsed.lines if pl.tx_type == "expense")
+        msg += f"\nTotal expenses: *{total:,} BDT*"
+        if saved_ids:
+            id_range = f"#{saved_ids[0]}" if len(saved_ids) == 1 else f"#{saved_ids[0]}–#{saved_ids[-1]}"
+            msg += f"\nTransaction IDs: *{id_range}*"
+        say(msg)
+        return
+
 
     # --- CANCEL ---
     if text_low in ("cancel", "abort", "discard", "no"):
@@ -696,21 +786,47 @@ def handle_trip_command(ack, respond, command):
 
 @app.command("/rate")
 def handle_rate_command(ack, respond, command):
-    """Set an exchange rate. Usage: /rate usd 122.5"""
+    """Set an exchange rate.
+    Usage:
+      /rate usd 122.5        → 1 USD = 122.5 BDT
+      /rate idr 1/140.6      → 1 BDT = 140.6 IDR  (system stores 1/140.6 = 0.00711)
+    """
     ack()
     conn = get_db()
     try:
         parts = command.get("text", "").strip().split()
         if len(parts) != 2:
-            respond("Usage: `/rate <currency> <rate>`\nExample: `/rate usd 122.5`")
+            respond(
+                "Usage: `/rate <currency> <rate>`\n"
+                "Examples:\n"
+                "• `/rate usd 122.5`  → 1 USD = 122.5 BDT\n"
+                "• `/rate idr 1/140.6`  → 1 BDT = 140.6 IDR"
+            )
             return
 
         currency = parts[0].upper()
-        try:
-            rate = float(parts[1])
-        except ValueError:
-            respond(f"Invalid rate: `{parts[1]}`")
-            return
+        rate_str = parts[1].strip()
+
+        # Support 1/X notation for currencies weaker than BDT
+        # e.g. "1/140.6" means 1 BDT = 140.6 IDR → 1 IDR = 1/140.6 BDT
+        if rate_str.startswith("1/"):
+            try:
+                divisor = float(rate_str[2:])
+                if divisor == 0:
+                    respond("Rate divisor cannot be zero.")
+                    return
+                rate = 1.0 / divisor
+                rate_display = f"1/{divisor} = {rate:.6f}"
+            except ValueError:
+                respond(f"Invalid rate format: `{rate_str}`. Use a number or 1/X format.")
+                return
+        else:
+            try:
+                rate = float(rate_str)
+                rate_display = str(rate)
+            except ValueError:
+                respond(f"Invalid rate: `{rate_str}`")
+                return
 
         # Ensure currency exists
         row = conn.execute(
@@ -729,11 +845,43 @@ def handle_rate_command(ack, respond, command):
         """, (currency, rate))
         conn.commit()
 
-        respond(
-            f"✅ Exchange rate updated:\n"
-            f"*1 {currency} = {rate} BDT*\n"
+        # Refresh any active session that has entries with this currency.
+        # Recalculate ALL lines with this currency — not just unresolved ones.
+        # This handles the case where a rate is updated mid-session (before save all),
+        # which should apply the new rate to everything about to be saved.
+        refreshed_summary = None
+        recalculated = 0
+        for uid, session in _sessions.items():
+            parsed = session["parsed"]
+            changed = False
+            for pl in parsed.lines:
+                if pl.original_currency == currency and pl.original_amount is not None:
+                    old_bdt = pl.amount_bdt
+                    pl.amount_bdt         = round(pl.original_amount * rate)
+                    pl.exchange_rate_used = rate
+                    pl.needs_review       = False
+                    pl.review_reason      = None
+                    if old_bdt != pl.amount_bdt:
+                        recalculated += 1
+                    changed = True
+            if changed:
+                refreshed_summary = format_review_summary(parsed)
+
+        bdt_per_unit = rate
+        unit_per_bdt = 1.0 / rate if rate > 0 else 0
+        msg = (
+            "✅ Exchange rate updated:\n"
+            f"*1 {currency} = {bdt_per_unit:.4f} BDT*\n"
+            f"*(1 BDT = {unit_per_bdt:.4f} {currency})*\n"
             f"Effective from today ({date.today().strftime('%d %B %Y')})"
         )
+        if refreshed_summary:
+            if recalculated > 0:
+                msg += f"\n\n*{recalculated} entr{'y' if recalculated == 1 else 'ies'} recalculated* with the new rate — here is the revised summary:\n\n"
+            else:
+                msg += "\n\nSession refreshed — here is the revised summary:\n\n"
+            msg += refreshed_summary
+        respond(msg)
     finally:
         conn.close()
 
@@ -761,58 +909,355 @@ def handle_rates_command(ack, respond, command):
         conn.close()
 
 
+def _parse_rate_value(rate_str: str) -> tuple[Optional[float], str]:
+    """Parse a rate string — supports plain float or 1/X notation.
+    Returns (rate_to_bdt, display_string) or (None, error_message).
+    """
+    rate_str = rate_str.strip()
+    if rate_str.startswith("1/"):
+        try:
+            divisor = float(rate_str[2:])
+            if divisor == 0:
+                return None, "Rate divisor cannot be zero."
+            rate = 1.0 / divisor
+            return rate, f"1/{divisor} ({rate:.6f} BDT per unit)"
+        except ValueError:
+            return None, f"Invalid rate format: `{rate_str}`"
+    else:
+        try:
+            return float(rate_str), rate_str
+        except ValueError:
+            return None, f"Invalid rate: `{rate_str}`"
+
+
 @app.command("/actual")
 def handle_actual_command(ack, respond, command):
-    """Set actual bank-confirmed amount for a transaction.
-    Usage: /actual <tx_id> <amount>
+    """Set bank-confirmed actual BDT amount for transactions.
+
+    Three modes:
+      /actual 42 1850                              — single transaction by ID
+      /actual 84-96 usd 123.7                     — ID range, recalculate from rate
+      /actual 2026-04-02 2026-04-04 usd 1/140.6  — date range, recalculate from rate
     """
     ack()
     conn = get_db()
     try:
-        parts = command.get("text", "").strip().split()
-        if len(parts) != 2:
-            respond("Usage: `/actual <transaction_id> <amount>`\n"
-                    "Example: `/actual 42 1850`")
-            return
-        try:
-            tx_id  = int(parts[0])
-            actual = round(float(parts[1]))
-        except ValueError:
-            respond("Invalid input. Both ID and amount must be numbers.")
+        text  = command.get("text", "").strip()
+        parts = text.split()
+
+        usage = (
+            "Usage:\n"
+            "• `/actual 42 1850` — set exact BDT for transaction #42\n"
+            "• `/actual 52 usd 110` — recalculate transaction #52 using USD rate 110\n"
+            "• `/actual 84-96 usd 123.7` — recalculate IDs 84–96 using USD rate 123.7\n"
+            "• `/actual 2026-04-02 2026-04-04 usd 1/140.6` — recalculate by date range\n"
+            "Rate supports 1/X format: `1/140.6` means 1 BDT = 140.6 of that currency\n"
+            "Note: `/actual` never changes the global exchange rate — use `/rate` for that."
+        )
+
+        if len(parts) < 2:
+            respond(usage)
             return
 
-        tx = conn.execute(
-            "SELECT id, estimated_amount_bdt, raw_text FROM transactions WHERE id = ?",
-            (tx_id,)
-        ).fetchone()
-        if not tx:
-            respond(f"Transaction #{tx_id} not found.")
+        # ── Mode 1a: single ID with direct BDT amount ────────────────────────
+        # /actual 42 1850
+        if len(parts) == 2 and "-" not in parts[0]:
+            try:
+                tx_id  = int(parts[0])
+                actual = round(float(parts[1]))
+            except ValueError:
+                respond("Invalid input. Use: `/actual <id> <amount>`")
+                return
+
+            tx = conn.execute(
+                "SELECT id, estimated_amount_bdt, raw_text FROM transactions WHERE id = ?",
+                (tx_id,)
+            ).fetchone()
+            if not tx:
+                respond(f"Transaction #{tx_id} not found.")
+                return
+
+            conn.execute(
+                "UPDATE transactions SET actual_amount_bdt = ? WHERE id = ?",
+                (actual, tx_id)
+            )
+            conn.commit()
+            diff = actual - tx["estimated_amount_bdt"]
+            sign = "+" if diff >= 0 else ""
+            respond(
+                f"✅ Transaction #{tx_id} updated:\n"
+                f"• _{tx['raw_text']}_\n"
+                f"• Estimated: {tx['estimated_amount_bdt']:,} BDT\n"
+                f"• Actual: *{actual:,} BDT*\n"
+                f"• Difference: {sign}{diff:,} BDT"
+            )
             return
 
-        conn.execute(
-            "UPDATE transactions SET actual_amount_bdt = ? WHERE id = ?",
-            (actual, tx_id)
-        )
-        conn.commit()
-        diff = actual - tx["estimated_amount_bdt"]
-        sign = "+" if diff >= 0 else ""
-        respond(
-            f"✅ Transaction #{tx_id} updated:\n"
-            f"• Description: _{tx['raw_text']}_\n"
-            f"• Estimated: {tx['estimated_amount_bdt']:,} BDT\n"
-            f"• Actual: *{actual:,} BDT*\n"
-            f"• Difference: {sign}{diff:,} BDT"
-        )
+        # ── Mode 1b: single ID with currency and rate ─────────────────────────
+        # /actual 52 usd 110
+        # Recalculates actual_amount_bdt for that one transaction.
+        # Does NOT update the global exchange rate — use /rate for that.
+        if len(parts) == 3 and "-" not in parts[0]:
+            try:
+                tx_id = int(parts[0])
+            except ValueError:
+                pass
+            else:
+                currency = parts[1].upper()
+                rate, rate_display = _parse_rate_value(parts[2])
+                if rate is None:
+                    respond(rate_display)
+                    return
+
+                tx = conn.execute(
+                    "SELECT id, raw_text, original_amount, estimated_amount_bdt, original_currency "
+                    "FROM transactions WHERE id = ?", (tx_id,)
+                ).fetchone()
+                if not tx:
+                    respond(f"Transaction #{tx_id} not found.")
+                    return
+                if tx["original_currency"] != currency:
+                    respond(
+                        f"Transaction #{tx_id} has currency *{tx['original_currency']}*, "
+                        f"not {currency}. Check the ID or currency."
+                    )
+                    return
+                if not tx["original_amount"]:
+                    respond(f"Transaction #{tx_id} has no original foreign amount to recalculate from.")
+                    return
+
+                actual = round(tx["original_amount"] * rate)
+                conn.execute(
+                    "UPDATE transactions SET actual_amount_bdt = ? WHERE id = ?",
+                    (actual, tx_id)
+                )
+                conn.commit()
+                diff = actual - tx["estimated_amount_bdt"]
+                sign = "+" if diff >= 0 else ""
+                respond(
+                    f"✅ Transaction #{tx_id} updated:\n"
+                    f"• _{tx['raw_text']}_\n"
+                    f"• Original: {tx['original_amount']} {currency}\n"
+                    f"• Rate used: {rate_display} BDT per {currency}\n"
+                    f"• Estimated was: {tx['estimated_amount_bdt']:,} BDT\n"
+                    f"• Actual now: *{actual:,} BDT* ({sign}{diff:,} BDT)\n"
+                    f"Note: global exchange rate unchanged — use `/rate` to update for future entries."
+                )
+                return
+
+        # ── Mode 2: ID range ──────────────────────────────────────────────────
+        # /actual 84-96 usd 123.7
+        id_range_match = re.match(r"^(\d+)-(\d+)$", parts[0])
+        if id_range_match and len(parts) == 3:
+            id_from    = int(id_range_match.group(1))
+            id_to      = int(id_range_match.group(2))
+            currency   = parts[1].upper()
+            rate, rate_display = _parse_rate_value(parts[2])
+            if rate is None:
+                respond(rate_display)
+                return
+
+            txs = conn.execute("""
+                SELECT id, raw_text, original_amount, estimated_amount_bdt
+                FROM transactions
+                WHERE id BETWEEN ? AND ?
+                  AND original_currency = ?
+                ORDER BY id
+            """, (id_from, id_to, currency)).fetchall()
+
+            if not txs:
+                respond(f"No {currency} transactions found with IDs {id_from}–{id_to}.")
+                return
+
+            # Preview
+            preview = [f"Found *{len(txs)} transactions* to update (IDs {id_from}–{id_to}, {currency} @ {rate_display}):\n"]
+            for tx in txs[:5]:
+                actual = round(tx["original_amount"] * rate)
+                preview.append(f"  #{tx['id']} {tx['raw_text'][:35]} → *{actual:,} BDT*")
+            if len(txs) > 5:
+                preview.append(f"  ... and {len(txs)-5} more")
+            preview.append("\nReply *confirm* to save, or *cancel* to abort.")
+            respond("\n".join(preview))
+
+            # Store pending bulk update in session store
+            _sessions[f"bulk_{command['user_id']}"] = {
+                "type": "bulk_actual",
+                "tx_ids": [tx["id"] for tx in txs],
+                "rate": rate,
+                "currency": currency,
+                "rate_display": rate_display,
+            }
+            return
+
+        # ── Mode 3: date range ────────────────────────────────────────────────
+        # /actual 2026-04-02 2026-04-04 usd 1/140.6
+        date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+        if len(parts) == 4 and date_re.match(parts[0]) and date_re.match(parts[1]):
+            date_from  = parts[0]
+            date_to    = parts[1]
+            currency   = parts[2].upper()
+            rate, rate_display = _parse_rate_value(parts[3])
+            if rate is None:
+                respond(rate_display)
+                return
+
+            txs = conn.execute("""
+                SELECT id, raw_text, original_amount, estimated_amount_bdt, transacted_at
+                FROM transactions
+                WHERE transacted_at BETWEEN ? AND ?
+                  AND original_currency = ?
+                ORDER BY transacted_at, id
+            """, (date_from, date_to, currency)).fetchall()
+
+            if not txs:
+                respond(f"No {currency} transactions found between {date_from} and {date_to}.")
+                return
+
+            preview = [f"Found *{len(txs)} transactions* to update ({date_from} to {date_to}, {currency} @ {rate_display}):\n"]
+            for tx in txs[:5]:
+                actual = round(tx["original_amount"] * rate)
+                preview.append(f"  #{tx['id']} {tx['transacted_at'][:10]} {tx['raw_text'][:30]} → *{actual:,} BDT*")
+            if len(txs) > 5:
+                preview.append(f"  ... and {len(txs)-5} more")
+            preview.append("\nReply *confirm* to save, or *cancel* to abort.")
+            respond("\n".join(preview))
+
+            _sessions[f"bulk_{command['user_id']}"] = {
+                "type": "bulk_actual",
+                "tx_ids": [tx["id"] for tx in txs],
+                "rate": rate,
+                "currency": currency,
+                "rate_display": rate_display,
+            }
+            return
+
+        respond(usage)
+
     finally:
         conn.close()
 
 
+
+
+def _parse_summary_date_range(text: str) -> tuple[Optional[str], Optional[str], str]:
+    """
+    Parse date or date-range from summary command text.
+    Returns (date_from, date_to, remaining_text) or (None, None, original_text).
+
+    Supported formats:
+      "29 april 2026"          → single day
+      "29 april"               → single day (current year)
+      "5-12 april 2026"        → date range within a month
+      "5-12 april"             → date range (current year)
+      "2026-04-05"             → ISO single date
+      "2026-04-05 2026-04-12"  → ISO date range
+    """
+    from parser import MONTH_MAP
+    today = date.today()
+    t = text.strip().lower()
+
+    # ISO date range: "2026-04-05 2026-04-12"
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})\s+(\d{4}-\d{2}-\d{2})(.*)", t)
+    if m:
+        return m.group(1), m.group(2), m.group(3).strip()
+
+    # ISO single date: "2026-04-29"
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})(.*)", t)
+    if m:
+        return m.group(1), m.group(1), m.group(2).strip()
+
+    # Day range + month + optional year: "5-12 april 2026" or "5-12 april"
+    m = re.match(r"^(\d{1,2})-(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?(.*)", t)
+    if m:
+        day_from, day_to = int(m.group(1)), int(m.group(2))
+        month_str = m.group(3)
+        year = int(m.group(4)) if m.group(4) else today.year
+        remaining = m.group(5).strip()
+        if month_str in MONTH_MAP:
+            month_num = MONTH_MAP[month_str]
+            try:
+                d_from = date(year, month_num, day_from).isoformat()
+                d_to   = date(year, month_num, day_to).isoformat()
+                return d_from, d_to, remaining
+            except ValueError:
+                pass
+
+    # Single day + month + optional year: "29 april 2026" or "29 april"
+    m = re.match(r"^(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?(.*)", t)
+    if m:
+        day = int(m.group(1))
+        month_str = m.group(2)
+        year = int(m.group(3)) if m.group(3) else today.year
+        remaining = m.group(4).strip()
+        if month_str in MONTH_MAP:
+            month_num = MONTH_MAP[month_str]
+            try:
+                d = date(year, month_num, day).isoformat()
+                return d, d, remaining
+            except ValueError:
+                pass
+
+    return None, None, text
+
+
+def _format_date_range_summary(
+    date_from: str, date_to: str, segment: str, conn
+) -> str:
+    """Build summary output for a specific date or date range."""
+    rows = conn.execute("""
+        SELECT purpose, purpose_slug,
+               SUM(amount_bdt)  AS total_bdt,
+               COUNT(*)         AS tx_count
+        FROM v_transactions
+        WHERE type = 'expense'
+          AND expense_date BETWEEN ? AND ?
+          AND (
+            ? = 'all'
+            OR (? = 'home'   AND is_travel = 0)
+            OR (? = 'travel' AND is_travel = 1)
+          )
+        GROUP BY purpose_slug
+        ORDER BY total_bdt DESC
+    """, (date_from, date_to, segment, segment, segment)).fetchall()
+
+    if not rows:
+        return f"No expenses found between {date_from} and {date_to}."
+
+    total = sum(r["total_bdt"] or 0 for r in rows)
+    seg_label = f" ({segment})" if segment != "all" else ""
+
+    if date_from == date_to:
+        label = datetime.strptime(date_from, "%Y-%m-%d").strftime("%d %B %Y").lstrip("0")
+    else:
+        d1 = datetime.strptime(date_from, "%Y-%m-%d").strftime("%d %b").lstrip("0")
+        d2 = datetime.strptime(date_to,   "%Y-%m-%d").strftime("%d %b %Y").lstrip("0")
+        label = f"{d1} – {d2}"
+
+    lines = [f"\U0001F4CA *{label}{seg_label}*\n"]
+    for r in rows:
+        pct = int((r["total_bdt"] or 0) / total * 100) if total else 0
+        bar = "\u2588" * (pct // 10)
+        lines.append(
+            f"  {(r['purpose'] or 'unknown'):20} {(r['total_bdt'] or 0):>8,.0f} BDT  "
+            f"{pct:3}% {bar}"
+        )
+    lines.append(f"\n  *Total: {total:,.0f} BDT*")
+    return "\n".join(lines)
+
+
 @app.command("/summary")
 def handle_summary_command(ack, respond, command):
-    """Show monthly summary or projection.
-    Usage: /summary              → current month projection
-           /summary april        → April summary
-           /summary home         → current month, home only
+    """Show spending summary.
+    Usage:
+      /summary                       → current month projection
+      /summary home                  → current month, home only
+      /summary travel                → current month, travel only
+      /summary april                 → April breakdown by purpose
+      /summary april home            → April, home only
+      /summary 29 april              → single day
+      /summary 29 april 2026         → single day with year
+      /summary 5-12 april            → date range within a month
+      /summary 5-12 april 2026       → date range with year
     """
     ack()
     conn = get_db()
@@ -820,26 +1265,33 @@ def handle_summary_command(ack, respond, command):
         text  = command.get("text", "").strip().lower()
         today = date.today()
 
-        # Parse month from text if given
-        target_month = today.strftime("%Y-%m")
-        segment      = "all"
+        # Detect segment keyword first
+        segment = "all"
+        if "home" in text:
+            segment = "home"
+        elif "travel" in text:
+            segment = "travel"
+        text_no_seg = text.replace("home", "").replace("travel", "").strip()
 
-        if text:
-            if text in ("home",):
-                segment = "home"
-            elif text in ("travel",):
-                segment = "travel"
-            else:
-                # Try to parse as month name
-                from parser import MONTH_MAP
-                for month_name, month_num in MONTH_MAP.items():
-                    if month_name in text:
-                        year = today.year
-                        target_month = f"{year}-{month_num:02d}"
-                        break
+        # Try to parse a specific date or date range
+        date_from, date_to, remaining = _parse_summary_date_range(text_no_seg)
+        if date_from:
+            result = _format_date_range_summary(date_from, date_to, segment, conn)
+            respond(result)
+            return
+
+        # Parse month and segment from text
+        from parser import MONTH_MAP
+        target_month = today.strftime("%Y-%m")
+        text_clean = text_no_seg
+        for month_name, month_num in MONTH_MAP.items():
+            if month_name in text_clean:
+                year = today.year
+                target_month = f"{year}-{month_num:02d}"
+                break
 
         # Current month projection
-        if target_month == today.strftime("%Y-%m"):
+        if target_month == today.strftime("%Y-%m") and not text_no_seg:
             proj = conn.execute(
                 "SELECT * FROM v_monthly_projection"
             ).fetchone()
@@ -883,12 +1335,158 @@ def handle_summary_command(ack, respond, command):
                 f"{pct:3}% {bar}"
             )
         lines.append(f"\n  *Total: {total:,.0f} BDT*")
-        lines.append(f"\nUse `/summary home` or `/summary travel` to filter.")
+        lines.append(
+            f"\nFilters: `/summary home` `/summary travel` "
+            f"`/summary april home` `/summary 5-12 april`"
+        )
 
         respond("\n".join(lines))
     finally:
         conn.close()
 
+
+
+@app.command("/entries")
+def handle_entries_command(ack, respond, command):
+    """Show detailed transaction list for a date or date range.
+    Usage:
+      /entries 29 april           → all entries on 29 April
+      /entries 29 april 2026      → with explicit year
+      /entries 5-12 april         → entries for a date range
+      /entries 5-12 april home    → home expenses only
+      /entries 5-12 april travel  → travel expenses only
+    """
+    ack()
+    conn = get_db()
+    try:
+        text = command.get("text", "").strip().lower()
+
+        if not text:
+            respond(
+                "Usage:\n"
+                "• `/entries 29 april` — entries for a single day\n"
+                "• `/entries 5-12 april` — entries for a date range\n"
+                "• `/entries 5-12 april home` — home expenses only\n"
+                "• `/entries 5-12 april travel` — travel expenses only"
+            )
+            return
+
+        # Detect segment
+        segment = "all"
+        if "home" in text:
+            segment = "home"
+        elif "travel" in text:
+            segment = "travel"
+        text_no_seg = text.replace("home", "").replace("travel", "").strip()
+
+        # Parse date or date range
+        date_from, date_to, _ = _parse_summary_date_range(text_no_seg)
+        if not date_from:
+            respond(
+                f"Could not parse date from: `{text}`\n"
+                "Try: `/entries 29 april` or `/entries 5-12 april 2026`"
+            )
+            return
+
+        # Build segment filter
+        seg_filter = ""
+        if segment == "home":
+            seg_filter = "AND is_travel = 0"
+        elif segment == "travel":
+            seg_filter = "AND is_travel = 1"
+
+        rows = conn.execute(f"""
+            SELECT
+                id,
+                expense_date,
+                type,
+                purpose,
+                amount_bdt,
+                original_amount,
+                original_currency,
+                payment_method,
+                city,
+                trip_name,
+                is_travel,
+                details,
+                raw_text
+            FROM v_transactions
+            WHERE expense_date BETWEEN ? AND ?
+              AND type IN ('expense', 'transfer', 'investment')
+              {seg_filter}
+            ORDER BY expense_date ASC, id ASC
+        """, (date_from, date_to)).fetchall()
+
+        if not rows:
+            seg_label = f" ({segment})" if segment != "all" else ""
+            if date_from == date_to:
+                respond(f"No entries found for {date_from}{seg_label}.")
+            else:
+                respond(f"No entries found between {date_from} and {date_to}{seg_label}.")
+            return
+
+        # Build header
+        seg_label = f" ({segment})" if segment != "all" else ""
+        if date_from == date_to:
+            d = datetime.strptime(date_from, "%Y-%m-%d")
+            header = f"📋 *{d.strftime('%d %B %Y').lstrip('0')}{seg_label}* — {len(rows)} entries"
+        else:
+            d1 = datetime.strptime(date_from, "%Y-%m-%d").strftime("%d %b").lstrip("0")
+            d2 = datetime.strptime(date_to,   "%Y-%m-%d").strftime("%d %b %Y").lstrip("0")
+            header = f"📋 *{d1} – {d2}{seg_label}* — {len(rows)} entries"
+
+        lines = [header, ""]
+
+        total_expense = 0
+        for r in rows:
+            # Icon
+            if r["type"] == "transfer":
+                icon = "🔄"
+            elif r["is_travel"]:
+                icon = "✈️ "
+            else:
+                icon = "  "
+
+            # Amount
+            amt = r["amount_bdt"] or 0
+            if r["original_currency"]:
+                amt_str = f"{amt:,} BDT ({r['original_amount']:g} {r['original_currency']})"
+            else:
+                amt_str = f"{amt:,} BDT"
+
+            # Purpose / type
+            if r["type"] == "transfer":
+                cat = "transfer"
+            else:
+                cat = (r["purpose"] or "?").lower()
+                if r["type"] == "expense":
+                    total_expense += amt
+
+            # Payment
+            pay = (r["payment_method"] or "").lower().replace("_", " ")
+
+            # Description — prefer details if set, else raw_text
+            desc = (r["details"] or r["raw_text"] or "")[:45]
+
+            # City if not Dhaka
+            city_note = f" @{r['city'].lower()}" if r["city"] and r["city"].lower() != "dhaka" else ""
+
+            lines.append(
+                f"{icon} `#{r['id']}` {r['expense_date']}  "
+                f"*{cat}*  {amt_str}  {pay}{city_note}"
+            )
+            if desc and desc.lower() != (r["raw_text"] or "").lower():
+                lines.append(f"       _{desc}_")
+
+        lines.append("")
+        lines.append(f"💰 *Total expenses: {total_expense:,} BDT*")
+        if len(rows) > 20:
+            lines.append(f"_Showing all {len(rows)} entries_")
+
+        respond("\n".join(lines))
+
+    finally:
+        conn.close()
 
 # =============================================================================
 # HELPER: auto-run on unknown currencies

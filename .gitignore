@@ -1,0 +1,17 @@
+# Virtual environment
+venv/
+
+# Database (your personal data)
+fintracker.db
+
+# Environment variables (your secrets)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
