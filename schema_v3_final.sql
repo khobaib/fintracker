@@ -443,6 +443,16 @@ CREATE TABLE IF NOT EXISTS classifier_rules (
 INSERT OR IGNORE INTO classifier_rules
     (pattern, match_type, tx_type, purpose_slug, payment_slug, transport_service, confidence, priority, notes)
 VALUES
+    -- DINNER/LUNCH AT HOTEL: food context overrides hotel → food_bill
+    -- "Dinner (Abesh Hotel)" should be food_bill not accommodation
+    ('(breakfast|lunch|dinner|brunch|meal|food).*hotel|(breakfast|lunch|dinner|brunch|meal|food).*restaurant|(breakfast|lunch|dinner|brunch|meal|food).*cafe|(breakfast|lunch|dinner|brunch|meal|food).*lounge',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 2, 'Food at hotel/restaurant — food context beats venue name'),
+
+    -- LOAN PAYMENTS: any "loan pay" or "loan payment" → expense type loan
+    -- Note: "X loan - 500" (giving a loan) = transfer, handled by transfer detection
+    ('\bloan\b|loan pay|loan payment|loan repay|loan instalment|bank loan|loan return',
+        'regex', 'expense', 'loan', NULL, NULL, 1.0, 4, 'Loan payment'),
+
     -- TREAT KEYWORD: highest priority food override
     -- If "treat" appears anywhere in the line, it's a treat not a food bill
     ('treat',   'keyword', 'expense', 'treat', NULL, NULL, 1.0, 3, 'Treat keyword override'),
@@ -457,6 +467,10 @@ VALUES
     ('\\(dbbl\\)',  'regex',    NULL, NULL, 'dbbl_card',    NULL, 1.0,  5, 'DBBL card bracket'),
     ('\\(bkash\\)', 'regex',    NULL, NULL, 'bkash',        NULL, 1.0,  5, 'bKash bracket'),
 
+    -- PATHAO PARCEL: courier delivery, not commuting
+    ('pathao parcel|pathao.*parcel|parcel.*pathao',
+        'regex', 'expense', 'others', NULL, NULL, 1.0, 6, 'Pathao parcel courier — not commuting'),
+
     -- MOBILE/INTERNET RECHARGE: must be before generic recharge rule
     ('mobile.*recharge|recharge.*mobile|internet.*recharge|recharge.*internet|data.*recharge|recharge.*data|sim.*recharge',
         'regex', 'expense', 'mobile_expense', NULL, NULL, 1.0, 7, 'Mobile and internet recharge'),
@@ -468,23 +482,51 @@ VALUES
 
     -- TRANSPORT
     ('uber',        'keyword',  'expense', 'commuting', 'cash', 'uber',     1.0, 10, 'Uber ride, cash default'),
+    ('indrive',     'keyword',  'expense', 'commuting', 'cash', 'indrive',  1.0, 10, 'InDrive ride'),
+    ('shohoz|obhai|chalo|rapido|maxim',
+        'regex',    'expense', 'commuting', 'cash', NULL,       1.0, 10, 'Other ride-sharing apps'),
+    ('\bvan\b',      'regex',    'expense', 'commuting', 'cash', NULL,       1.0, 10, 'Van transport'),
+    ('expressway toll|road toll|toll',
+        'regex',    'expense', 'commuting', 'cash', NULL,       1.0, 10, 'Road tolls'),
     ('pathao',      'keyword',  'expense', 'commuting', 'cash', 'pathao',   1.0, 10, 'Pathao ride'),
     ('gojek',       'keyword',  'expense', 'commuting', 'cash', 'gojek',    1.0, 10, 'Gojek ride'),
     ('grab',        'keyword',  'expense', 'commuting', 'cash', 'grab',     1.0, 10, 'Grab ride'),
     ('rickshaw',    'keyword',  'expense', 'commuting', 'cash', NULL,       1.0, 10, 'Rickshaw'),
+    ('rickhsaw|rickhsahw|riksha|rikshaw',
+        'regex',    'expense', 'commuting', 'cash', NULL,       1.0, 10, 'Rickshaw typo variants'),
     ('cng',         'keyword',  'expense', 'commuting', 'cash', NULL,      0.95, 10, 'CNG'),
     ('metro',       'keyword',  'expense', 'commuting', 'metro_card', NULL, 1.0, 10, 'Metro rail'),
     ('bus',         'keyword',  'expense', 'commuting', 'cash', NULL,       0.9, 10, 'Bus'),
     ('bike to',     'keyword',  'expense', 'commuting', 'cash', 'uber',     1.0,  5, 'Bike/office'),
+    ('bike',          'keyword',  'expense', 'commuting', 'cash', NULL,       0.9, 11, 'Bike ride (general)'),
     ('flight',      'keyword',  'expense', 'commuting', NULL,   NULL,       1.0, 10, 'Flight'),
 
     -- SHOPPING: electronics, accessories, clothing, household items
     ('cable|charger|adapter|earphone|headphone|keyboard|mouse|bag|wallet|shoe|sandal',
         'regex', 'expense', 'shopping', NULL, NULL, 0.9, 22, 'Accessories and peripherals'),
-    ('shirt|pant|trouser|jacket|hoodie|tshirt|t-shirt|dress|sari|saree|lungi|kameez|punjabi',
+    ('shirt|pant|trouser|jacket|hoodie|tshirt|t-shirt|dress|sari|saree|lungi|kameez|punjabi|panjabi|eid panjabi',
         'regex', 'expense', 'shopping', NULL, NULL, 0.9, 22, 'Clothing'),
+    ('moshari|mosquito net|bedsheet|pillow|curtain|wipes|tissue|napkin|rope|string',
+        'regex', 'expense', 'shopping', NULL, NULL, 0.9, 22, 'Household goods bought as shopping'),
     ('\bphone\b|\btablet\b|\bwatch\b|\bspeaker\b|\bcamera\b|\busb\b|\bhdmi\b',
         'regex', 'expense', 'shopping', NULL, NULL, 0.85, 22, 'Electronics'),
+
+    -- COURIER / PARCEL
+    ('courier|parcel|pathao parcel|delivery charge|shipping charge',
+        'regex', 'expense', 'others', NULL, NULL, 0.9, 21, 'Courier and parcel'),
+    ('print|photocopy|lamination',
+        'regex', 'expense', 'others', NULL, NULL, 0.9, 21, 'Print and photocopy'),
+
+    -- MIXED ITEMS with + or comma containing non-food items → shopping
+    -- Examples: "Chocolate + perfume", "cookies + bag", "snacks + notebook"
+    ('perfume|cologne|deodorant|aftershave',
+        'regex', 'expense', 'shopping', NULL, NULL, 1.0, 18, 'Perfume and fragrance → shopping'),
+
+    -- GROCERY: tissue, powder milk, dairy, raw ingredients → grocery from now on
+    ('tissue|powder milk|baby wipes|gablu wipes|diaper|nappy|toilet paper|toiletries|honey|\bhoney\b',
+        'regex', 'expense', 'grocery', NULL, NULL, 1.0, 21, 'Household consumables'),
+    ('raw chicken|frozen|yogurt|\bpad\b|sanitary',
+        'regex', 'expense', 'grocery', NULL, NULL, 0.9, 21, 'Grocery items'),
 
     -- BANK / MFS SERVICE CHARGES
     -- Statement charges, solvency certificates, service fees from banks/MFS
@@ -495,10 +537,20 @@ VALUES
     -- KNOWN MERCHANTS
     ('shajgoj|chaldal|unimart|meena bazar|agora|lavender|shopno',
         'regex',    'expense', 'grocery',  NULL, NULL, 1.0, 15, 'Supermarkets'),
+    ('gym|fitness|yoga|pilates|crossfit',
+        'regex',    'expense', 'health',   NULL, NULL, 1.0, 14, 'Gym and fitness'),
+    ('minoxidil|derma roller|hair serum|moisturizer|sunscreen|sunblock|spf|cerave|neutrogena|garnier|loreal|nivea|vaseline|skincare|skin care|vitamin c cream|vitamin e cream|serum|face wash|face cream|body lotion|lip balm|condom|contraceptive',
+        'regex',    'expense', 'health',   NULL, NULL, 1.0, 14, 'Health and personal care products'),
+    ('teeth scaling|dental scaling|dental|dentist|orthodontist|tooth|teeth|braces',
+        'regex',    'expense', 'medical',  NULL, NULL, 1.0, 14, 'Dental care'),
+    ('haircut|head massage|beard trim|salon|parlour|parlor|barbershop',
+        'regex',    'expense', 'health',   NULL, NULL, 1.0, 14, 'Grooming (from Jan 2026)'),
     ('pharmacy|chemist|drugstore',
         'regex',    'expense', 'medical',  NULL, NULL, 1.0, 15, 'Pharmacy'),
-    ('doctor|clinic|hospital|diagnostic|lab test|labs',
+    ('doctor|clinic|hospital|diagnostic|lab test|labs|ultrasound|xray|x-ray|blood test|surgery|operation|medical test',
         'regex',    'expense', 'medical',  NULL, NULL, 0.95,15, 'Medical services'),
+    ('medicine|saline|mm kit|ors|paracetamol|napa|antacid|antibiotic|syrup|tablet|capsule|eye drop|eyedrop|eye ointment|ear drop',
+        'regex',    'expense', 'medical',  NULL, NULL, 0.9, 15, 'Medicines'),
 
     -- MEALS: always food_bill at full confidence unless "treat" keyword is present
     -- Generic food words — used as wrappers: "Food (sate ratu)", "snacks X", "food bill X"
@@ -524,6 +576,25 @@ VALUES
     ('chips|crisps|popcorn|nachos|pretzel',
         'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 28, 'Packaged snacks'),
 
+    -- ADDITIONAL FOOD ITEMS: common words not covered by meal/snack rules
+    -- Western dishes
+    ('steak|pasta|sushi|burger|pizza|taco|wrap|curry|roast|grilled|fried rice|fish and chips|dim sum|bbq',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'Western and international dishes'),
+    -- South Asian and Bangladeshi dishes
+    ('paratha|samosa|rolls|pitha|mishti|payesh|halwa|dal bhaat|roti|tikka|dosa|idli|momo|lassi',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 19, 'South Asian dishes and sweets'),
+    ('bhuna|vorta|shutki|ilish|hilsa|rezala|kalia|jhalmuri|singara|doi|thali|set meal|combo meal',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'More Bangladeshi dishes'),
+    ('lichu|lychee|kul boroi|kul|boroi|chowmin|chow mein|mousse|luchi|alur dom|muri bhorta|kulfi|lebu|kheer|corn|shingara|singara|shomucha|samosa|shingarar',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'More food items from real data'),
+    ('burgar|sausage|butter bon|dessert|bread|butter|egg',
+        'regex', 'expense', 'food_bill', NULL, NULL, 0.9, 29, 'Common food items'),
+    ('soup|chicken roll|roll|kul boroi|lichu|lebu',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'More food items'),
+    -- Drinks that are food-context (not beverages category)
+    ('smoothie|milkshake',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'Blended drinks'),
+
     -- FOOD & BEVERAGES
     ('fuchka|chotpoti|bhelpuri',
         'regex',    'expense', 'food_bill',    'cash', NULL, 1.0, 20, 'Street food'),
@@ -534,15 +605,31 @@ VALUES
     ('water|mineral water',
         'regex',    'expense', 'beverages',    'cash', NULL, 0.9, 20, 'Water'),
     ('tea',     'keyword', 'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Tea'),
+    ('coffe\b|cofee\b|cofffee\b',
+        'regex',   'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Coffee typo variants'),
     ('cha',     'keyword', 'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Cha (tea)'),
     ('chai',    'keyword', 'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Chai (tea)'),
+    -- Coffee in restaurant name context: "(X coffee)" where X is not a drink modifier
+    -- "apon coffee", "beans and aroma" etc are restaurant names
+    -- Handled by food-context rules at priority 2 — this bare coffee rule is lower
     ('coffee',  'keyword', 'expense', 'beverages', 'cash', NULL, 0.85, 20, 'Coffee'),
-    ('juice',
-        'keyword',  'expense', 'beverages',    'cash', NULL, 0.9, 20, 'Juice'),
+    ('juice',       'keyword',  'expense', 'beverages', 'cash', NULL, 1.0,  6, 'Juice — always beverages, high priority'),
+    ('coconut water|coconut juice|daab',
+        'regex',    'expense', 'beverages', 'cash', NULL, 1.0, 20, 'Coconut water'),
+    ('boba|bubble tea|pearl milk tea',
+        'regex',    'expense', 'beverages', 'cash', NULL, 1.0, 20, 'Boba and bubble tea'),
+    ('hot chocolate|cold chocolate|dark chocolate|caramel.*chocolate|chocolate.*drink|chocolate.*shake',
+        'regex',    'expense', 'beverages', NULL, NULL, 1.0, 19, 'Chocolate drinks — dark/hot/cold forms = beverage; plain chocolate = food_bill'),
 
     -- HOUSEHOLD
     ('cockroach|mosquito|coil|detergent|broom|mop|cleaning|gel|spray|disinfect',
         'regex',    'expense', 'household',    'cash', NULL, 0.9, 20, 'Household items'),
+
+    -- GIFT
+    ('gift|eid salami|boishakh gift|birthday gift|wedding gift|present for|salami|\bgablu\b|pirbaba gift|porag gift',
+        'regex', 'expense', 'gift', NULL, NULL, 0.9, 22, 'Gift keywords'),
+    ('\btips?\b|biye bari tips|guard tips',
+        'regex', 'expense', 'gift', NULL, NULL, 0.9, 22, 'Tips'),
 
     -- MOBILE / INTERNET
     ('recharge|internet pack|mb |data pack|sim|robi|grameenphone|gp |banglalink|teletalk|sms charge|mobile charge|mobile data charge|data charge',
@@ -553,14 +640,26 @@ VALUES
         'regex',    'expense', 'accommodation', NULL, NULL, 0.95,20, 'Accommodation'),
     ('rent|service charge|utility bill|internet.*bill|garbage.*bill|ac rent|advance payment for room',
         'regex',    'expense', 'accommodation', NULL, NULL, 0.95,15, 'Rent and home bills'),
+    ('ac bill|air condition.*bill|ac.*charge|water filter|water bill|bua.*salary|maid.*salary|house.*salary',
+        'regex',    'expense', 'accommodation', NULL, NULL, 0.95,15, 'Home utility and staff bills'),
+
+    -- ROLL CHAI: restaurant name (roll = food, chai in restaurant name ≠ beverage)
+    ('roll chai|roll and chai|roll.*chai',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 1, 'Roll Chai restaurant'),
+
+    -- FOOD DELIVERY SUBSCRIPTIONS → food_bill (not digital_product)
+    ('foodi pro|foodi subscription|foodpanda pro|fp pro|fp subscription',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 6, 'Food delivery subscriptions'),
 
     -- DIGITAL PRODUCTS / SUBSCRIPTIONS
     ('spotify|netflix|youtube premium|google one|claude|chatgpt|openai|slack|notion|dropbox|adobe|microsoft 365|apple',
         'regex',    'expense', 'digital_product', NULL, NULL, 1.0, 15, 'Digital subscriptions'),
 
     -- RECREATION
-    ('park ticket|entry ticket|museum|zoo|aquarium|theme park',
-        'regex',    'expense', 'recreation',   NULL, NULL, 0.9, 20, 'Entry tickets');
+    ('park ticket|entry ticket|museum|zoo|aquarium|theme park|theatre|theater|shilpakala|concert|show ticket|cinema|movie',
+        'regex',    'expense', 'recreation',   NULL, NULL, 0.9, 20, 'Entry tickets and events'),
+    ('horse car|horse ride|boat ride|paddle boat|amusement|fair|mela|carnival|\bpot\b|pottery|\bkite\b|flying|\bfrisbee\b',
+        'regex',    'expense', 'recreation',   NULL, NULL, 0.9, 20, 'Recreation activities');
 
 
 -- =============================================================================

@@ -831,6 +831,19 @@ def parse_line(
         result.purpose_override = True
         result.match_source     = MatchSource.MANUAL
         result.confidence       = 1.0
+    elif result.paid_for and rule_purpose in ("food_bill", "beverages", "commuting"):
+        # [Name] prefix = paid for someone else
+        # food/beverage paid for guest = treat
+        # commuting paid for guest = commuting (still your expense)
+        if rule_purpose in ("food_bill", "beverages"):
+            result.purpose_slug     = "treat"
+            result.purpose_override = True
+            result.match_source     = MatchSource.RULE
+            result.confidence       = 1.0
+        else:
+            result.purpose_slug = rule_purpose
+            result.match_source = MatchSource.RULE
+            result.confidence   = rule_conf
     elif rule_purpose:
         result.purpose_slug  = rule_purpose
         result.match_source  = MatchSource.RULE
