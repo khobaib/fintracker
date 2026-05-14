@@ -152,6 +152,12 @@ check("ebl cashout",        transfer("EBL cashout - 6500"),      (True, "ebl", "
 check("ebl cash withdraw",  transfer("ebl cash withdraw - 2500"), (True, "ebl", "cash"))
 check("not a transfer",     transfer("bike to office - 150"),    (False, None, None))
 check("not a transfer 2",   transfer("fuchka - 120"),            (False, None, None))
+# Loan rules (AC-04)
+check("person loan transfer",      transfer("wasim loan - 500"),             (True,  "cash", "person"))
+check("friend loan transfer",      transfer("friend_xyz loan - 500"),        (True,  "cash", "person"))
+check("person loan pay → expense", transfer("friend_xyz loan pay - 182000"), (False, None,   None))
+check("ebl loan pay → expense",    transfer("ebl loan pay - 2000"),          (False, None,   None))
+check("loan payment → expense",    transfer("chaldal loan payment - 100000"),(False, None,   None))
 
 
 # =============================================================================

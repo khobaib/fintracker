@@ -470,12 +470,17 @@ def parse_transfer(line_lower: str) -> tuple[bool, Optional[str], Optional[str]]
     Returns: (is_transfer, from_slug, to_slug)
 
     Patterns:
-      "ebl to bkash"      → (True, "ebl", "bkash")
-      "scb to bkash"      → (True, "scb", "bkash")
-      "bkash cashout"     → (True, "bkash", "cash")
-      "ebl cashout"       → (True, "ebl", "cash")
-      "ebl cash withdraw" → (True, "ebl", "cash")
-      "dbbl to ebl"       → (True, "dbbl", "ebl")
+      "ebl to bkash"           → (True,  "ebl",   "bkash")
+      "scb to bkash"           → (True,  "scb",   "bkash")
+      "bkash cashout"          → (True,  "bkash", "cash")
+      "ebl cashout"            → (True,  "ebl",   "cash")
+      "ebl cash withdraw"      → (True,  "ebl",   "cash")
+      "dbbl to ebl"            → (True,  "dbbl",  "ebl")
+      "wasim loan"             → (True,  "cash",  "person")  ← giving/receiving loan
+      "friend_xyz loan"        → (True,  "cash",  "person")  ← same
+      "ebl loan pay"           → (False, None,    None)      ← expense, purpose: loan
+      "friend_xyz loan pay"    → (False, None,    None)      ← expense, purpose: loan
+      "chaldal loan payment"   → (False, None,    None)      ← expense, purpose: loan
     """
     # Pattern: "X to Y"
     m = re.search(
@@ -495,6 +500,17 @@ def parse_transfer(line_lower: str) -> tuple[bool, Optional[str], Optional[str]]
     if m:
         from_acc = ACCOUNT_SLUGS.get(m.group(1), m.group(1))
         return True, from_acc, "cash"
+
+    # Pattern: "X loan" → transfer (giving or receiving a loan)
+    # BUT if any form of "pay" appears anywhere in the line → expense (loan repayment)
+    # e.g. "wasim loan - 500"        → transfer
+    #      "friend_xyz loan - 500"   → transfer
+    #      "ebl loan pay - 2000"     → NOT a transfer (expense, purpose: loan)
+    #      "friend_xyz loan pay"     → NOT a transfer (expense, purpose: loan)
+    m = re.search(r'\bloan\b', line_lower)
+    if m:
+        if not re.search(r'pay', line_lower):  # "pay", "payment", "repay" all caught
+            return True, "cash", "person"
 
     return False, None, None
 
