@@ -2,6 +2,7 @@
 -- FINTRACKER — Personal Finance Tracker
 -- Database Schema v3.0
 -- Author: Khobaib Chowdhury
+-- test deploy May 2026
 -- =============================================================================
 --
 -- CHANGES FROM v2.0:
