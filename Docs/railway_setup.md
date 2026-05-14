@@ -198,8 +198,29 @@ To add `ANTHROPIC_API_KEY` when Phase 2 is ready:
 - Check Railway logs for errors
 
 **Database resets on every deploy**
-- The volume was not created before the first deploy
-- Solution: delete the service, create the volume first, then redeploy
+
+This happens when the volume was not created before the first deploy, so the DB is living inside the container at `/app/fintracker.db` instead of `/data/fintracker.db`.
+
+Recovery steps (do NOT delete the service — you will lose data):
+
+1. Go to Railway → your service → **Variables** tab — confirm `DB_PATH` is set to `/data/fintracker.db`
+2. Install Railway CLI — use whichever method fits your system:
+   - **macOS:** `brew install railway`
+   - **Windows (Scoop):** first install Scoop, then `scoop install railway`
+     - To install Scoop, open PowerShell (NOT as admin) and run:
+       `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
+       then: `Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression`
+   - **Node.js (any OS):** `npm install -g @railway/cli`
+   - **Linux/macOS one-liner:** `bash <(curl -fsSL railway.com/install.sh)`
+3. Run `railway login`, then `railway link`, then `railway ssh`
+4. Inside the shell, copy the DB to the volume:
+   ```
+   cp /app/fintracker.db /data/fintracker.db
+   ```
+5. Verify: `ls /data/` — should show `fintracker.db`
+6. Exit the shell and trigger a redeploy from the Railway dashboard
+
+From this point on, all data persists on the volume permanently.
 
 **`ModuleNotFoundError`**
 - A package is missing from `requirements.txt`
