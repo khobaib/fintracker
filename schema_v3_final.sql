@@ -450,7 +450,7 @@ VALUES
 
     -- LOAN PAYMENTS: any "loan pay" or "loan payment" → expense type loan
     -- Note: "X loan - 500" (giving a loan) = transfer, handled by transfer detection
-    ('loan pay|loan payment|loan repay|loan instalment|bank loan|loan return|loan paid',
+    ('\bloan\b|loan pay|loan payment|loan repay|loan instalment|bank loan|loan return',
         'regex', 'expense', 'loan', NULL, NULL, 1.0, 4, 'Loan payment'),
 
     -- TREAT KEYWORD: highest priority food override
@@ -472,7 +472,7 @@ VALUES
         'regex', 'expense', 'others', NULL, NULL, 1.0, 6, 'Pathao parcel courier — not commuting'),
 
     -- MOBILE/INTERNET RECHARGE: must be before generic recharge rule
-    ('mobile.*recharge|recharge.*mobile|internet.*recharge|recharge.*internet|data.*recharge|recharge.*data|\bsim\b.*recharge',
+    ('mobile.*recharge|recharge.*mobile|internet.*recharge|recharge.*internet|data.*recharge|recharge.*data|sim.*recharge',
         'regex', 'expense', 'mobile_expense', NULL, NULL, 1.0, 7, 'Mobile and internet recharge'),
 
     -- METRO CARD RECHARGE: commuting, not mobile_expense
@@ -522,10 +522,6 @@ VALUES
     ('perfume|cologne|deodorant|aftershave',
         'regex', 'expense', 'shopping', NULL, NULL, 1.0, 18, 'Perfume and fragrance → shopping'),
 
-    -- GROCERY KEYWORD: if user writes the word grocery, classify as grocery
-    ('grocery',
-        'keyword', 'expense', 'grocery', NULL, NULL, 1.0, 5, 'Grocery keyword — explicit mention'),
-
     -- GROCERY: tissue, powder milk, dairy, raw ingredients → grocery from now on
     ('tissue|powder milk|baby wipes|gablu wipes|diaper|nappy|toilet paper|toiletries|honey|\bhoney\b',
         'regex', 'expense', 'grocery', NULL, NULL, 1.0, 21, 'Household consumables'),
@@ -541,8 +537,8 @@ VALUES
     -- KNOWN MERCHANTS
     ('shajgoj|chaldal|unimart|meena bazar|agora|lavender|shopno',
         'regex',    'expense', 'grocery',  NULL, NULL, 1.0, 15, 'Supermarkets'),
-    ('gym|fitness|yoga|pilates|crossfit',
-        'regex',    'expense', 'health',   NULL, NULL, 1.0, 14, 'Gym and fitness'),
+    ('gym|fitness|yoga|pilates|crossfit|badminton|tennis|cricket|football|soccer|basketball|volleyball|swimming|cycling|running|jogging|sports|outdoor sports|sport fee|sport payment|sport subscription|squash|table tennis|ping pong|golf|archery|boxing|martial arts|karate|taekwondo|futsal|handball|rugby|hockey|skating|skateboarding|climbing|trekking|hiking',
+        'regex',    'expense', 'health',   NULL, NULL, 1.0, 14, 'Gym, fitness and sports'),
     ('minoxidil|derma roller|hair serum|moisturizer|sunscreen|sunblock|spf|cerave|neutrogena|garnier|loreal|nivea|vaseline|skincare|skin care|vitamin c cream|vitamin e cream|serum|face wash|face cream|body lotion|lip balm|condom|contraceptive',
         'regex',    'expense', 'health',   NULL, NULL, 1.0, 14, 'Health and personal care products'),
     ('teeth scaling|dental scaling|dental|dentist|orthodontist|tooth|teeth|braces',
@@ -551,7 +547,7 @@ VALUES
         'regex',    'expense', 'health',   NULL, NULL, 1.0, 14, 'Grooming (from Jan 2026)'),
     ('pharmacy|chemist|drugstore',
         'regex',    'expense', 'medical',  NULL, NULL, 1.0, 15, 'Pharmacy'),
-    ('doctor|clinic|hospital|diagnostic|lab test|labs|ultrasound|xray|x-ray|blood test|surgery|operation|medical test',
+    ('doctor|clinic|hospital|diagnostic|lab test|labs|ultrasound|xray|x-ray|blood test|surgery|operation|medical test|pregnancy|pregnancy kit|pregnancy test|hcg|beta-hcg',
         'regex',    'expense', 'medical',  NULL, NULL, 0.95,15, 'Medical services'),
     ('medicine|saline|mm kit|ors|paracetamol|napa|antacid|antibiotic|syrup|tablet|capsule|eye drop|eyedrop|eye ointment|ear drop',
         'regex',    'expense', 'medical',  NULL, NULL, 0.9, 15, 'Medicines'),
@@ -599,10 +595,6 @@ VALUES
     ('smoothie|milkshake',
         'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'Blended drinks'),
 
-    -- STANDALONE TIPS → gift (priority 30 — lower than food rules at 25-29)
-    ('tips',
-        'keyword', 'expense', 'gift', NULL, NULL, 0.9, 30, 'Standalone tips — food rules take precedence'),
-
     -- FOOD & BEVERAGES
     ('fuchka|chotpoti|bhelpuri',
         'regex',    'expense', 'food_bill',    'cash', NULL, 1.0, 20, 'Street food'),
@@ -636,11 +628,11 @@ VALUES
     -- GIFT
     ('gift|eid salami|boishakh gift|birthday gift|wedding gift|present for|salami|\bgablu\b|pirbaba gift|porag gift',
         'regex', 'expense', 'gift', NULL, NULL, 0.9, 22, 'Gift keywords'),
-    ('biye bari tips|guard tips',
+    ('\btips?\b|biye bari tips|guard tips',
         'regex', 'expense', 'gift', NULL, NULL, 0.9, 22, 'Tips'),
 
     -- MOBILE / INTERNET
-    ('recharge|internet pack|mb |data pack|\bsim\b|robi|grameenphone|gp |banglalink|teletalk|sms charge|mobile charge|mobile data charge|data charge',
+    ('recharge|internet pack|mb |data pack|sim|robi|grameenphone|gp |banglalink|teletalk|sms charge|mobile charge|mobile data charge|data charge',
         'regex',    'expense', 'mobile_expense', NULL, NULL, 0.9, 20, 'Mobile/internet'),
 
     -- ACCOMMODATION
