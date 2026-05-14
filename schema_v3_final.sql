@@ -450,7 +450,7 @@ VALUES
 
     -- LOAN PAYMENTS: any "loan pay" or "loan payment" → expense type loan
     -- Note: "X loan - 500" (giving a loan) = transfer, handled by transfer detection
-    ('\bloan\b|loan pay|loan payment|loan repay|loan instalment|bank loan|loan return',
+    ('loan pay|loan payment|loan repay|loan instalment|bank loan|loan return|loan paid',
         'regex', 'expense', 'loan', NULL, NULL, 1.0, 4, 'Loan payment'),
 
     -- TREAT KEYWORD: highest priority food override
@@ -472,7 +472,7 @@ VALUES
         'regex', 'expense', 'others', NULL, NULL, 1.0, 6, 'Pathao parcel courier — not commuting'),
 
     -- MOBILE/INTERNET RECHARGE: must be before generic recharge rule
-    ('mobile.*recharge|recharge.*mobile|internet.*recharge|recharge.*internet|data.*recharge|recharge.*data|sim.*recharge',
+    ('mobile.*recharge|recharge.*mobile|internet.*recharge|recharge.*internet|data.*recharge|recharge.*data|\bsim\b.*recharge',
         'regex', 'expense', 'mobile_expense', NULL, NULL, 1.0, 7, 'Mobile and internet recharge'),
 
     -- METRO CARD RECHARGE: commuting, not mobile_expense
@@ -521,6 +521,10 @@ VALUES
     -- Examples: "Chocolate + perfume", "cookies + bag", "snacks + notebook"
     ('perfume|cologne|deodorant|aftershave',
         'regex', 'expense', 'shopping', NULL, NULL, 1.0, 18, 'Perfume and fragrance → shopping'),
+
+    -- GROCERY KEYWORD: if user writes the word grocery, classify as grocery
+    ('grocery',
+        'keyword', 'expense', 'grocery', NULL, NULL, 1.0, 5, 'Grocery keyword — explicit mention'),
 
     -- GROCERY: tissue, powder milk, dairy, raw ingredients → grocery from now on
     ('tissue|powder milk|baby wipes|gablu wipes|diaper|nappy|toilet paper|toiletries|honey|\bhoney\b',
@@ -595,6 +599,10 @@ VALUES
     ('smoothie|milkshake',
         'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'Blended drinks'),
 
+    -- STANDALONE TIPS → gift (priority 30 — lower than food rules at 25-29)
+    ('tips',
+        'keyword', 'expense', 'gift', NULL, NULL, 0.9, 30, 'Standalone tips — food rules take precedence'),
+
     -- FOOD & BEVERAGES
     ('fuchka|chotpoti|bhelpuri',
         'regex',    'expense', 'food_bill',    'cash', NULL, 1.0, 20, 'Street food'),
@@ -628,11 +636,11 @@ VALUES
     -- GIFT
     ('gift|eid salami|boishakh gift|birthday gift|wedding gift|present for|salami|\bgablu\b|pirbaba gift|porag gift',
         'regex', 'expense', 'gift', NULL, NULL, 0.9, 22, 'Gift keywords'),
-    ('\btips?\b|biye bari tips|guard tips',
+    ('biye bari tips|guard tips',
         'regex', 'expense', 'gift', NULL, NULL, 0.9, 22, 'Tips'),
 
     -- MOBILE / INTERNET
-    ('recharge|internet pack|mb |data pack|sim|robi|grameenphone|gp |banglalink|teletalk|sms charge|mobile charge|mobile data charge|data charge',
+    ('recharge|internet pack|mb |data pack|\bsim\b|robi|grameenphone|gp |banglalink|teletalk|sms charge|mobile charge|mobile data charge|data charge',
         'regex',    'expense', 'mobile_expense', NULL, NULL, 0.9, 20, 'Mobile/internet'),
 
     -- ACCOMMODATION
