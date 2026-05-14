@@ -1005,8 +1005,17 @@ def format_review_summary(parsed: ParsedPaste) -> str:
     """
     lines_out = []
 
-    # Header
-    date_str = parsed.entry_date.strftime("%d %B").lstrip("0")
+    # Header — show date range if paste spans multiple dates
+    all_dates = sorted(set(l.entry_date for l in parsed.lines if l.entry_date))
+    if len(all_dates) > 1:
+        first = all_dates[0].strftime("%d").lstrip("0")
+        last  = all_dates[-1].strftime("%d %B").lstrip("0")
+        # If different months, show full date for first too
+        if all_dates[0].month != all_dates[-1].month:
+            first = all_dates[0].strftime("%d %B").lstrip("0")
+        date_str = f"{first}–{last}"
+    else:
+        date_str = parsed.entry_date.strftime("%d %B").lstrip("0")
     city_str = parsed.default_city.replace('_', ' ').title()
     header = f"📅 {date_str}  📍 {city_str}"
     lines_out.append(header)
