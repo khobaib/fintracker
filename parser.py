@@ -470,19 +470,21 @@ def parse_transfer(line_lower: str) -> tuple[bool, Optional[str], Optional[str]]
     Returns: (is_transfer, from_slug, to_slug)
 
     Patterns:
-      "ebl to bkash"           → (True,  "ebl",   "bkash")
-      "scb to bkash"           → (True,  "scb",   "bkash")
-      "bkash cashout"          → (True,  "bkash", "cash")
-      "ebl cashout"            → (True,  "ebl",   "cash")
-      "ebl cash withdraw"      → (True,  "ebl",   "cash")
-      "dbbl to ebl"            → (True,  "dbbl",  "ebl")
-      "wasim loan"             → (True,  "cash",  "person")  ← giving/receiving loan
-      "friend_xyz loan"        → (True,  "cash",  "person")  ← same
-      "ebl loan pay"           → (False, None,    None)      ← expense, purpose: loan
-      "friend_xyz loan pay"    → (False, None,    None)      ← expense, purpose: loan
-      "chaldal loan payment"   → (False, None,    None)      ← expense, purpose: loan
+      "ebl to bkash"                    → (True,  "ebl",    "bkash")
+      "scb to bkash"                    → (True,  "scb",    "bkash")
+      "bkash cashout"                   → (True,  "bkash",  "cash")
+      "ebl cashout"                     → (True,  "ebl",    "cash")
+      "ebl cash withdraw"               → (True,  "ebl",    "cash")
+      "dbbl to ebl"                     → (True,  "dbbl",   "ebl")
+      "wasim loan"                      → (True,  "cash",   "person")
+      "friend_xyz loan"                 → (True,  "cash",   "person")
+      "ebl loan pay"                    → (False, None,     None)  ← expense, purpose: loan
+      "friend_xyz loan pay"             → (False, None,     None)  ← expense, purpose: loan
+      "chaldal loan payment"            → (False, None,     None)  ← expense, purpose: loan
+      "received from raya (transfer)"   → (True,  "person", "cash")
+      "raya transfer"                   → (True,  "cash",   "person")
     """
-    # Pattern: "X to Y"
+    # Pattern: "X to Y" (account to account)
     m = re.search(
         r'\b(ebl|scb|dbbl|bkash|b-kash|nagad|cash)\s+to\s+(ebl|scb|dbbl|bkash|b-kash|nagad|cash)\b',
         line_lower
@@ -501,6 +503,19 @@ def parse_transfer(line_lower: str) -> tuple[bool, Optional[str], Optional[str]]
         from_acc = ACCOUNT_SLUGS.get(m.group(1), m.group(1))
         return True, from_acc, "cash"
 
+    # Pattern: "received from NAME (transfer)" or "received from NAME"
+    # → money received = transfer in
+    m = re.search(r'\breceived\s+from\b', line_lower)
+    if m:
+        return True, "person", "cash"
+
+    # Pattern: "NAME transfer" or "transfer from/to NAME"
+    # → explicit use of the word "transfer" = always a transfer
+    # Exclude lines like "transfer fee" which are expenses
+    if re.search(r'\btransfer\b', line_lower):
+        if not re.search(r'transfer\s+fee|transfer\s+charge|transfer\s+cost', line_lower):
+            return True, "cash", "person"
+
     # Pattern: "X loan" → transfer (giving or receiving a loan)
     # BUT if any form of "pay" appears anywhere in the line → expense (loan repayment)
     # e.g. "wasim loan - 500"        → transfer
@@ -509,7 +524,7 @@ def parse_transfer(line_lower: str) -> tuple[bool, Optional[str], Optional[str]]
     #      "friend_xyz loan pay"     → NOT a transfer (expense, purpose: loan)
     m = re.search(r'\bloan\b', line_lower)
     if m:
-        if not re.search(r'pay', line_lower):  # "pay", "payment", "repay" all caught
+        if not re.search(r'pay', line_lower):
             return True, "cash", "person"
 
     return False, None, None
@@ -517,13 +532,15 @@ def parse_transfer(line_lower: str) -> tuple[bool, Optional[str], Optional[str]]
 
 def parse_third_party_paid(text: str) -> tuple[str, Optional[str], Optional[int]]:
     """
-    Detect "(X paid)" pattern.
+    Detect third-party paid patterns.
     Returns: (text_without_paid_bracket, paid_by_name, original_bill_bdt)
 
     "(friend_xyz paid)"   → my expense = 0, paid_by = "Friend_xyz"
     "- friend_xyz paid"   → my expense = 0, paid_by = "Friend_xyz" (no amount)
+    "(paid by Raya)"      → my expense = 0, paid_by = "Raya"
+    "- paid by abbu"      → my expense = 0, paid_by = "Abbu"
     """
-    # Pattern: ends with "(name paid)" or "(name paid, ...)"
+    # Pattern: "(NAME paid)" or "(NAME paid, ...)"
     m = re.search(r'\(([^)]+?\s+paid[^)]*)\)', text, re.I)
     if m:
         content = m.group(1)
@@ -533,8 +550,22 @@ def parse_third_party_paid(text: str) -> tuple[str, Optional[str], Optional[int]
             remaining = text[:m.start()].rstrip() + text[m.end():]
             return remaining.strip(), paid_by, None
 
-    # Pattern: line ends with "- X paid" (no amount at all)
+    # Pattern: "(paid by NAME)"
+    m = re.search(r'\(paid\s+by\s+(\w+)[^)]*\)', text, re.I)
+    if m:
+        paid_by = m.group(1).capitalize()
+        remaining = text[:m.start()].rstrip() + text[m.end():]
+        return remaining.strip(), paid_by, None
+
+    # Pattern: line ends with "- NAME paid" (no amount)
     m = re.search(r'-\s*(\w+)\s+paid\s*$', text, re.I)
+    if m:
+        paid_by = m.group(1).capitalize()
+        remaining = text[:m.start()].rstrip()
+        return remaining.strip(), paid_by, None
+
+    # Pattern: line ends with "- paid by NAME" (no amount)
+    m = re.search(r'-\s*paid\s+by\s+(\w+)\s*$', text, re.I)
     if m:
         paid_by = m.group(1).capitalize()
         remaining = text[:m.start()].rstrip()

@@ -2,7 +2,6 @@
 -- FINTRACKER — Personal Finance Tracker
 -- Database Schema v3.0
 -- Author: Khobaib Chowdhury
--- test deploy May 2026
 -- =============================================================================
 --
 -- CHANGES FROM v2.0:
@@ -583,8 +582,8 @@ VALUES
 
     -- ADDITIONAL FOOD ITEMS: common words not covered by meal/snack rules
     -- Western dishes
-    ('steak|pasta|sushi|burger|pizza|taco|wrap|curry|roast|grilled|fried rice|fish and chips|dim sum|bbq',
-        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'Western and international dishes'),
+    ('steak|pasta|sushi|burger|pizza|taco|wrap|curry|roast|grilled|fried rice|fish and chips|dim sum|bbq|squid|prawn|shrimp|crab|lobster|seafood|fish fry|fish curry|fish ball|hilsa fry|ilish fry|ruhi|catfish',
+        'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 29, 'Western, international and seafood dishes'),
     -- South Asian and Bangladeshi dishes
     ('paratha|samosa|rolls|pitha|mishti|payesh|halwa|dal bhaat|roti|tikka|dosa|idli|momo|lassi',
         'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 19, 'South Asian dishes and sweets'),
@@ -609,7 +608,7 @@ VALUES
         'regex',    'expense', 'food_bill',    'cash', NULL, 1.0, 20, 'Street food'),
     ('badam|peanut|chanachur|chips',
         'regex',    'expense', 'food_bill',    'cash', NULL, 0.9, 20, 'Snacks'),
-    ('guava|watermelon|mango|aam|papaya|banana|fruit',
+    ('guava|watermelon|mango|aam|papaya|banana|fruit|pineapple|ananas|apple|orange|grape|strawberry|lemon|lime|coconut|dates|khejur|litchi|lichu|lychee|berry|melon|kiwi|avocado|plum|peach|apricot',
         'regex',    'expense', 'food_bill',    'cash', NULL, 0.9, 20, 'Fresh fruit'),
     ('water|mineral water',
         'regex',    'expense', 'beverages',    'cash', NULL, 0.9, 20, 'Water'),
@@ -641,7 +640,7 @@ VALUES
         'regex', 'expense', 'gift', NULL, NULL, 0.9, 22, 'Tips'),
 
     -- MOBILE / INTERNET
-    ('recharge|internet pack|mb |data pack|\bsim\b|robi|grameenphone|gp |banglalink|teletalk|sms charge|mobile charge|mobile data charge|data charge',
+    ('recharge|internet pack|mb |data pack|\bsim\b|robi|grameenphone|gp |banglalink|teletalk|sms charge|mobile charge|mobile data charge|mobile data|data charge|mobile internet',
         'regex',    'expense', 'mobile_expense', NULL, NULL, 0.9, 20, 'Mobile/internet'),
 
     -- ACCOMMODATION
@@ -661,7 +660,7 @@ VALUES
         'regex', 'expense', 'food_bill', NULL, NULL, 1.0, 6, 'Food delivery subscriptions'),
 
     -- DIGITAL PRODUCTS / SUBSCRIPTIONS
-    ('spotify|netflix|youtube premium|google one|claude|chatgpt|openai|slack|notion|dropbox|adobe|microsoft 365|apple',
+    ('spotify|netflix|youtube premium|google one|claude|chatgpt|openai|slack|notion|dropbox|adobe|microsoft 365|apple music|apple tv|apple one|apple arcade|apple fitness|apple icloud|icloud|apple watch|apple keyboard|apple mouse|apple pencil|apple airpods|airpods|apple macbook|macbook|apple iphone|apple ipad|apple pc|apple pro|apple store',
         'regex',    'expense', 'digital_product', NULL, NULL, 1.0, 15, 'Digital subscriptions'),
 
     -- RECREATION
