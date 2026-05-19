@@ -36,6 +36,16 @@ import sqlite3
 import logging
 from datetime import date, datetime
 from typing import Optional
+import threading
+
+# Google Sheets (optional — only if package is installed)
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build as gapi_build
+    GSHEETS_AVAILABLE = True
+except ImportError:
+    GSHEETS_AVAILABLE = False
+
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
@@ -85,6 +95,120 @@ def init_db():
     conn.close()
 
 # =============================================================================
+# =============================================================================
+# GOOGLE SHEETS INTEGRATION
+# =============================================================================
+
+SHEET_HEADERS = [
+    "ID", "Date", "Created At", "Type", "Purpose", "Description",
+    "Amount BDT", "Estimated BDT", "Actual BDT",
+    "Original Amount", "Currency", "Exchange Rate",
+    "Payment Method", "Platform", "City", "Trip",
+    "Is Travel", "Paid By", "Paid For", "Cashback BDT",
+    "Source", "Raw Text"
+]
+SHEET_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+
+def get_sheets_service():
+    """Return authenticated Google Sheets API service."""
+    if not GSHEETS_AVAILABLE:
+        raise RuntimeError("google-api-python-client not installed. Run: pip install google-api-python-client google-auth")
+    creds_raw = os.environ.get("GOOGLE_SHEETS_CREDENTIALS", "")
+    if not creds_raw:
+        raise RuntimeError("GOOGLE_SHEETS_CREDENTIALS env var not set")
+    creds = service_account.Credentials.from_service_account_info(
+        json.loads(creds_raw), scopes=SHEET_SCOPES
+    )
+    return gapi_build("sheets", "v4", credentials=creds, cache_discovery=False)
+
+
+def get_or_create_tab(service, spreadsheet_id: str, tab_name: str):
+    """Get or create a named sheet tab, write headers if new."""
+    meta     = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    existing = [s["properties"]["title"] for s in meta["sheets"]]
+    if tab_name not in existing:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]}
+        ).execute()
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{tab_name}!A1",
+            valueInputOption="RAW",
+            body={"values": [SHEET_HEADERS]}
+        ).execute()
+    return tab_name
+
+
+def tx_to_row(tx) -> list:
+    """Convert a DB transaction row to a Sheets row."""
+    return [
+        tx["id"],
+        str(tx["transacted_at"] or ""),
+        str(tx["created_at"] or ""),
+        str(tx["type"] or ""),
+        str(tx["purpose_slug"] or ""),
+        str(tx["description"] or tx["raw_text"] or ""),
+        int(tx["amount_bdt"] or 0),
+        int(tx["estimated_amount_bdt"] or 0),
+        int(tx["actual_amount_bdt"]) if tx["actual_amount_bdt"] else "",
+        float(tx["original_amount"]) if tx["original_amount"] else "",
+        str(tx["original_currency"] or "BDT"),
+        float(tx["exchange_rate_used"]) if tx["exchange_rate_used"] else "",
+        str(tx["payment_slug"] or "cash"),
+        str(tx["platform"] or ""),
+        str(tx["city_slug"] or "dhaka"),
+        str(tx["trip_name"] or ""),
+        1 if tx["trip_id"] else 0,
+        str(tx["paid_by"] or ""),
+        str(tx["paid_for"] or ""),
+        int(tx["cashback_bdt"]) if tx["cashback_bdt"] else "",
+        str(tx["source"] or "slack_bot"),
+        str(tx["raw_text"] or ""),
+    ]
+
+
+def sync_to_sheets(tx_ids: list, conn: sqlite3.Connection):
+    """Append transactions to Google Sheets. Silent on failure — never blocks the bot."""
+    spreadsheet_id = os.environ.get("GOOGLE_SHEET_ID", "")
+    if not spreadsheet_id or not GSHEETS_AVAILABLE:
+        return
+    try:
+        service = get_sheets_service()
+        tab     = get_or_create_tab(service, spreadsheet_id, "Transactions")
+        txs     = conn.execute(f"""
+            SELECT t.id, t.transacted_at, t.created_at, t.type,
+                   t.purpose_slug, t.description, t.amount_bdt,
+                   t.estimated_amount_bdt, t.actual_amount_bdt,
+                   t.original_amount, t.original_currency, t.exchange_rate_used,
+                   t.payment_slug, t.platform, t.city_slug,
+                   tr.name AS trip_name, t.trip_id,
+                   t.paid_by, t.paid_for, t.cashback_bdt,
+                   t.source, t.raw_text
+            FROM transactions t
+            LEFT JOIN trips tr ON t.trip_id = tr.id
+            WHERE t.id IN ({",".join("?" * len(tx_ids))})
+            ORDER BY t.id
+        """, tx_ids).fetchall()
+        if not txs:
+            return
+        rows = [tx_to_row(tx) for tx in txs]
+        service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=f"{tab}!A1",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": rows}
+        ).execute()
+        logger.info(f"Synced {len(rows)} transactions to Google Sheets")
+    except Exception as e:
+        logger.warning(f"Google Sheets sync failed (non-fatal): {e}")
+
+
 # SESSION STORE
 # In-memory store for active review sessions.
 # Key: slack_user_id  Value: {session_id, parsed_paste, pending corrections}
@@ -622,6 +746,10 @@ def _handle_session_input(user_id: str, text: str, say, conn: sqlite3.Connection
         if saved_ids:
             id_range = f"#{saved_ids[0]}" if len(saved_ids) == 1 else f"#{saved_ids[0]}–#{saved_ids[-1]}"
             msg += f"\nTransaction IDs: *{id_range}* — use these with `/actual` to update bank amounts"
+            # Auto-sync to Google Sheets in background thread
+            threading.Thread(
+                target=sync_to_sheets, args=(saved_ids, get_db()), daemon=True
+            ).start()
         say(msg)
         return
 
@@ -634,6 +762,9 @@ def _handle_session_input(user_id: str, text: str, say, conn: sqlite3.Connection
         if saved_ids:
             id_range = f"#{saved_ids[0]}" if len(saved_ids) == 1 else f"#{saved_ids[0]}–#{saved_ids[-1]}"
             msg += f"\nTransaction IDs: *{id_range}*"
+            threading.Thread(
+                target=sync_to_sheets, args=(saved_ids, get_db()), daemon=True
+            ).start()
         say(msg)
         return
 
@@ -1500,6 +1631,126 @@ def handle_message_events(body, logger):
 # =============================================================================
 # STARTUP
 # =============================================================================
+
+@app.command("/export")
+def handle_export_command(ack, respond, command):
+    """Export all transactions to Google Sheets.
+    Usage:
+      /export           → export everything not yet in Sheets
+      /export all       → re-export all transactions (full refresh)
+      /export 2026-04   → export a specific month
+    """
+    ack()
+    spreadsheet_id = os.environ.get("GOOGLE_SHEET_ID", "")
+    if not spreadsheet_id:
+        respond("❌ GOOGLE_SHEET_ID environment variable not set.")
+        return
+    if not GSHEETS_AVAILABLE:
+        respond("❌ Google Sheets packages not installed. Run: pip install google-api-python-client google-auth")
+        return
+
+    text = command.get("text", "").strip().lower()
+    conn = get_db()
+    try:
+        respond("⏳ Exporting to Google Sheets… this may take a moment.")
+
+        # Build query based on argument
+        if text == "all":
+            txs = conn.execute("""
+                SELECT t.id, t.transacted_at, t.created_at, t.type,
+                       t.purpose_slug, t.description, t.amount_bdt,
+                       t.estimated_amount_bdt, t.actual_amount_bdt,
+                       t.original_amount, t.original_currency, t.exchange_rate_used,
+                       t.payment_slug, t.platform, t.city_slug,
+                       tr.name AS trip_name, t.trip_id,
+                       t.paid_by, t.paid_for, t.cashback_bdt,
+                       t.source, t.raw_text
+                FROM transactions t
+                LEFT JOIN trips tr ON t.trip_id = tr.id
+                ORDER BY t.transacted_at, t.id
+            """).fetchall()
+            label = "all transactions"
+
+        elif len(text) == 7 and text[4] == "-":
+            # Month filter: 2026-04
+            txs = conn.execute("""
+                SELECT t.id, t.transacted_at, t.created_at, t.type,
+                       t.purpose_slug, t.description, t.amount_bdt,
+                       t.estimated_amount_bdt, t.actual_amount_bdt,
+                       t.original_amount, t.original_currency, t.exchange_rate_used,
+                       t.payment_slug, t.platform, t.city_slug,
+                       tr.name AS trip_name, t.trip_id,
+                       t.paid_by, t.paid_for, t.cashback_bdt,
+                       t.source, t.raw_text
+                FROM transactions t
+                LEFT JOIN trips tr ON t.trip_id = tr.id
+                WHERE strftime('%Y-%m', t.transacted_at) = ?
+                ORDER BY t.transacted_at, t.id
+            """, (text,)).fetchall()
+            label = f"transactions for {text}"
+
+        else:
+            # Default: export everything (same as all)
+            txs = conn.execute("""
+                SELECT t.id, t.transacted_at, t.created_at, t.type,
+                       t.purpose_slug, t.description, t.amount_bdt,
+                       t.estimated_amount_bdt, t.actual_amount_bdt,
+                       t.original_amount, t.original_currency, t.exchange_rate_used,
+                       t.payment_slug, t.platform, t.city_slug,
+                       tr.name AS trip_name, t.trip_id,
+                       t.paid_by, t.paid_for, t.cashback_bdt,
+                       t.source, t.raw_text
+                FROM transactions t
+                LEFT JOIN trips tr ON t.trip_id = tr.id
+                ORDER BY t.transacted_at, t.id
+            """).fetchall()
+            label = "all transactions"
+
+        if not txs:
+            respond(f"No transactions found for {label}.")
+            return
+
+        # Write to Sheets
+        service = get_sheets_service()
+
+        if text == "all":
+            # Full refresh — clear and rewrite
+            tab = get_or_create_tab(service, spreadsheet_id, "Transactions")
+            # Clear existing data (keep headers)
+            service.spreadsheets().values().clear(
+                spreadsheetId=spreadsheet_id,
+                range=f"{tab}!A2:Z"
+            ).execute()
+            rows = [tx_to_row(tx) for tx in txs]
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"{tab}!A2",
+                valueInputOption="RAW",
+                body={"values": rows}
+            ).execute()
+        else:
+            # Append mode
+            tab  = get_or_create_tab(service, spreadsheet_id, "Transactions")
+            rows = [tx_to_row(tx) for tx in txs]
+            service.spreadsheets().values().append(
+                spreadsheetId=spreadsheet_id,
+                range=f"{tab}!A1",
+                valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body={"values": rows}
+            ).execute()
+
+        respond(
+            f"✅ Exported *{len(rows)} rows* to Google Sheets ({label}).\n"
+            f"Open your sheet to view: https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+        )
+
+    except Exception as e:
+        respond(f"❌ Export failed: {e}")
+        logger.error(f"Export error: {e}")
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     init_db()
