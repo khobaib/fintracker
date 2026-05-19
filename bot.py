@@ -192,7 +192,9 @@ def sync_to_sheets(tx_ids: list, conn: sqlite3.Connection):
         ).execute()
         logger.info(f"Synced {len(rows)} transactions to Google Sheets")
     except Exception as e:
-        logger.warning(f"Google Sheets sync failed (non-fatal): {e}")
+        import traceback
+        logger.error(f"Google Sheets sync failed: {e}")
+        logger.error(traceback.format_exc())
 
 
 # SESSION STORE
@@ -732,10 +734,11 @@ def _handle_session_input(user_id: str, text: str, say, conn: sqlite3.Connection
         if saved_ids:
             id_range = f"#{saved_ids[0]}" if len(saved_ids) == 1 else f"#{saved_ids[0]}–#{saved_ids[-1]}"
             msg += f"\nTransaction IDs: *{id_range}* — use these with `/actual` to update bank amounts"
-            # Auto-sync to Google Sheets in background thread
-            threading.Thread(
-                target=sync_to_sheets, args=(saved_ids, get_db()), daemon=True
-            ).start()
+            # Sync to Google Sheets in background (non-daemon so it completes)
+            t = threading.Thread(
+                target=sync_to_sheets, args=(saved_ids, get_db())
+            )
+            t.start()
         say(msg)
         return
 
@@ -748,9 +751,10 @@ def _handle_session_input(user_id: str, text: str, say, conn: sqlite3.Connection
         if saved_ids:
             id_range = f"#{saved_ids[0]}" if len(saved_ids) == 1 else f"#{saved_ids[0]}–#{saved_ids[-1]}"
             msg += f"\nTransaction IDs: *{id_range}*"
-            threading.Thread(
-                target=sync_to_sheets, args=(saved_ids, get_db()), daemon=True
-            ).start()
+            t = threading.Thread(
+                target=sync_to_sheets, args=(saved_ids, get_db())
+            )
+            t.start()
         say(msg)
         return
 
