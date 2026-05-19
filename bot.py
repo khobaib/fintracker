@@ -100,12 +100,11 @@ def init_db():
 # =============================================================================
 
 SHEET_HEADERS = [
-    "ID", "Date", "Created At", "Type", "Purpose", "Description",
+    "ID", "Date", "Created At", "Type", "Purpose",
     "Amount BDT", "Estimated BDT", "Actual BDT",
     "Original Amount", "Currency", "Exchange Rate",
-    "Payment Method", "Platform", "City", "Trip",
-    "Is Travel", "Paid By", "Paid For", "Cashback BDT",
-    "Source", "Raw Text"
+    "Payment Method", "City", "Trip", "Is Travel",
+    "Source", "Raw Text", "Details"
 ]
 SHEET_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -145,30 +144,26 @@ def get_or_create_tab(service, spreadsheet_id: str, tab_name: str):
 
 
 def tx_to_row(tx) -> list:
-    """Convert a DB transaction row to a Sheets row."""
+    """Convert a v_transactions row to a Sheets row."""
     return [
         tx["id"],
-        str(tx["transacted_at"] or ""),
-        str(tx["created_at"] or ""),
+        str(tx["expense_date"] or tx["transacted_at"] or ""),
+        str(tx["entry_date"] or tx["created_at"] or ""),
         str(tx["type"] or ""),
-        str(tx["purpose_slug"] or ""),
-        str(tx["description"] or tx["raw_text"] or ""),
+        str(tx["purpose_slug"] or tx["purpose"] or ""),
         int(tx["amount_bdt"] or 0),
         int(tx["estimated_amount_bdt"] or 0),
         int(tx["actual_amount_bdt"]) if tx["actual_amount_bdt"] else "",
         float(tx["original_amount"]) if tx["original_amount"] else "",
         str(tx["original_currency"] or "BDT"),
         float(tx["exchange_rate_used"]) if tx["exchange_rate_used"] else "",
-        str(tx["payment_slug"] or "cash"),
-        str(tx["platform"] or ""),
-        str(tx["city_slug"] or "dhaka"),
+        str(tx["payment_method"] or "cash"),
+        str(tx["city_slug"] or tx["city"] or "dhaka"),
         str(tx["trip_name"] or ""),
         1 if tx["trip_id"] else 0,
-        str(tx["paid_by"] or ""),
-        str(tx["paid_for"] or ""),
-        int(tx["cashback_bdt"]) if tx["cashback_bdt"] else "",
         str(tx["source"] or "slack_bot"),
         str(tx["raw_text"] or ""),
+        str(tx["details"] or ""),
     ]
 
 
@@ -181,18 +176,9 @@ def sync_to_sheets(tx_ids: list, conn: sqlite3.Connection):
         service = get_sheets_service()
         tab     = get_or_create_tab(service, spreadsheet_id, "Transactions")
         txs     = conn.execute(f"""
-            SELECT t.id, t.transacted_at, t.created_at, t.type,
-                   t.purpose_slug, t.description, t.amount_bdt,
-                   t.estimated_amount_bdt, t.actual_amount_bdt,
-                   t.original_amount, t.original_currency, t.exchange_rate_used,
-                   t.payment_slug, t.platform, t.city_slug,
-                   tr.name AS trip_name, t.trip_id,
-                   t.paid_by, t.paid_for, t.cashback_bdt,
-                   t.source, t.raw_text
-            FROM transactions t
-            LEFT JOIN trips tr ON t.trip_id = tr.id
-            WHERE t.id IN ({",".join("?" * len(tx_ids))})
-            ORDER BY t.id
+            SELECT * FROM v_transactions
+            WHERE id IN ({",".join("?" * len(tx_ids))})
+            ORDER BY id
         """, tx_ids).fetchall()
         if not txs:
             return
@@ -1657,52 +1643,25 @@ def handle_export_command(ack, respond, command):
         # Build query based on argument
         if text == "all":
             txs = conn.execute("""
-                SELECT t.id, t.transacted_at, t.created_at, t.type,
-                       t.purpose_slug, t.description, t.amount_bdt,
-                       t.estimated_amount_bdt, t.actual_amount_bdt,
-                       t.original_amount, t.original_currency, t.exchange_rate_used,
-                       t.payment_slug, t.platform, t.city_slug,
-                       tr.name AS trip_name, t.trip_id,
-                       t.paid_by, t.paid_for, t.cashback_bdt,
-                       t.source, t.raw_text
-                FROM transactions t
-                LEFT JOIN trips tr ON t.trip_id = tr.id
-                ORDER BY t.transacted_at, t.id
+                SELECT * FROM v_transactions
+                ORDER BY transacted_at, id
             """).fetchall()
             label = "all transactions"
 
         elif len(text) == 7 and text[4] == "-":
             # Month filter: 2026-04
             txs = conn.execute("""
-                SELECT t.id, t.transacted_at, t.created_at, t.type,
-                       t.purpose_slug, t.description, t.amount_bdt,
-                       t.estimated_amount_bdt, t.actual_amount_bdt,
-                       t.original_amount, t.original_currency, t.exchange_rate_used,
-                       t.payment_slug, t.platform, t.city_slug,
-                       tr.name AS trip_name, t.trip_id,
-                       t.paid_by, t.paid_for, t.cashback_bdt,
-                       t.source, t.raw_text
-                FROM transactions t
-                LEFT JOIN trips tr ON t.trip_id = tr.id
-                WHERE strftime('%Y-%m', t.transacted_at) = ?
-                ORDER BY t.transacted_at, t.id
+                SELECT * FROM v_transactions
+                WHERE month = ?
+                ORDER BY transacted_at, id
             """, (text,)).fetchall()
             label = f"transactions for {text}"
 
         else:
             # Default: export everything (same as all)
             txs = conn.execute("""
-                SELECT t.id, t.transacted_at, t.created_at, t.type,
-                       t.purpose_slug, t.description, t.amount_bdt,
-                       t.estimated_amount_bdt, t.actual_amount_bdt,
-                       t.original_amount, t.original_currency, t.exchange_rate_used,
-                       t.payment_slug, t.platform, t.city_slug,
-                       tr.name AS trip_name, t.trip_id,
-                       t.paid_by, t.paid_for, t.cashback_bdt,
-                       t.source, t.raw_text
-                FROM transactions t
-                LEFT JOIN trips tr ON t.trip_id = tr.id
-                ORDER BY t.transacted_at, t.id
+                SELECT * FROM v_transactions
+                ORDER BY transacted_at, id
             """).fetchall()
             label = "all transactions"
 
