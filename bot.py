@@ -1,7 +1,6 @@
 # =============================================================================
 # FINTRACKER — Slack Bot
 # Receives daily expense pastes, runs the parser, manages review flow
-# dummy push - checking webhook to railway working or not
 # =============================================================================
 #
 # FLOW:
@@ -104,6 +103,8 @@ def init_db():
         return
 
     # Always refresh rules tables so pushed schema changes take effect
+    # Temporarily disable FK checks — transactions reference these tables
+    # but we're only replacing lookup/config data, not touching transactions
     rules_tables = [
         "classifier_rules",
         "purpose_taxonomy",
@@ -112,9 +113,11 @@ def init_db():
         "currencies",
         "cities",
     ]
+    conn.execute("PRAGMA foreign_keys = OFF")
     for table in rules_tables:
         conn.execute(f"DELETE FROM {table}")
     conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
 
     with open("schema_v3_final.sql", encoding='utf-8') as f:
         conn.executescript(f.read())
