@@ -3,6 +3,7 @@ venv/
 
 # Database (your personal data)
 fintracker.db
+test_fintracker.db
 
 # Environment variables (your secrets)
 .env
