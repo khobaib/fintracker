@@ -531,6 +531,8 @@ VALUES
         'regex', 'expense', 'grocery', NULL, NULL, 1.0, 21, 'Household consumables'),
     ('raw chicken|frozen|yogurt|\bpad\b|sanitary',
         'regex', 'expense', 'grocery', NULL, NULL, 0.9, 21, 'Grocery items'),
+    ('vegetable|vegetables|veggies|\bcucumber\b|cauliflower|broccoli|\btomato\b|tomatoes|potato|potatoes|onion|onions|garlic|ginger|carrot|carrots|spinach|lettuce|cabbage|eggplant|brinjal|begun|capsicum|pepper|pumpkin|lau|korola|bitter gourd|dhania|coriander|parsley|leek|celery|radish|turnip|beet|zucchini|mushroom|mushrooms|bean|beans|pea|peas|lentil|dal|\bdal\b|moong|masoor|chana|chickpea|corn|\bcorn\b|okra|dherosh|shim|aubergine',
+        'regex', 'expense', 'grocery', NULL, NULL, 1.0, 21, 'Vegetables and legumes'),
 
     -- BANK / MFS SERVICE CHARGES
     -- Statement charges, solvency certificates, service fees from banks/MFS
@@ -648,7 +650,7 @@ VALUES
         'regex',    'expense', 'accommodation', NULL, NULL, 0.95,20, 'Accommodation'),
     ('rent|service charge|utility bill|internet.*bill|garbage.*bill|ac rent|advance payment for room',
         'regex',    'expense', 'accommodation', NULL, NULL, 0.95,15, 'Rent and home bills'),
-    ('ac bill|air condition.*bill|ac.*charge|water filter|water bill|bua.*salary|maid.*salary|house.*salary',
+    ('ac bill|air condition.*bill|ac.*charge|water filter|water bill|bua.*salary|maid.*salary|house.*salary|electricity bill|electricity charge|electric bill|bijli bill|wasa bill|gas bill|power bill',
         'regex',    'expense', 'accommodation', NULL, NULL, 0.95,15, 'Home utility and staff bills'),
 
     -- ROLL CHAI: restaurant name (roll = food, chai in restaurant name ≠ beverage)
