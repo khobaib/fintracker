@@ -82,16 +82,44 @@ def get_db() -> sqlite3.Connection:
 
 
 def init_db():
-    """Initialize DB from schema if not already done."""
+    """Initialize DB and refresh rules from schema on every startup.
+
+    - Transaction data (transactions, trips, slack_sessions, etc.) is NEVER touched.
+    - Rules tables (classifier_rules, purpose_taxonomy, payment_method,
+      accounts, currencies, cities) are cleared and reloaded from schema
+      on every deploy so schema changes take effect immediately.
+    """
     conn = get_db()
-    # Check if tables exist
+
+    # Create tables if this is a brand new database
     tables = conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE type='table'"
     ).fetchone()[0]
     if tables < 5:
         with open("schema_v3_final.sql", encoding='utf-8') as f:
             conn.executescript(f.read())
-        logger.info("Database initialized from schema_v3.sql")
+        logger.info("Database initialized from schema_v3_final.sql (fresh setup)")
+        conn.close()
+        return
+
+    # Always refresh rules tables so pushed schema changes take effect
+    rules_tables = [
+        "classifier_rules",
+        "purpose_taxonomy",
+        "payment_method",
+        "accounts",
+        "currencies",
+        "cities",
+    ]
+    for table in rules_tables:
+        conn.execute(f"DELETE FROM {table}")
+    conn.commit()
+
+    with open("schema_v3_final.sql", encoding='utf-8') as f:
+        conn.executescript(f.read())
+
+    logger.info("Database rules and taxonomy refreshed.")
+    logger.info("Transaction data preserved.")
     conn.close()
 
 # =============================================================================
