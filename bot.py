@@ -207,11 +207,16 @@ def sync_to_sheets(tx_ids: list, conn: sqlite3.Connection):
     try:
         service = get_sheets_service()
         tab     = get_or_create_tab(service, spreadsheet_id, "Transactions")
-        txs     = conn.execute(f"""
+        # Open a fresh connection for this thread — SQLite connections cannot
+        # be shared across threads
+        thread_conn = sqlite3.connect(DB_PATH)
+        thread_conn.row_factory = sqlite3.Row
+        txs = thread_conn.execute(f"""
             SELECT * FROM v_transactions
             WHERE id IN ({",".join("?" * len(tx_ids))})
             ORDER BY id
         """, tx_ids).fetchall()
+        thread_conn.close()
         if not txs:
             return
         rows = [tx_to_row(tx) for tx in txs]
