@@ -4,6 +4,9 @@ All changes to the Fintracker project are documented here by PRD version.
 
 ---
 
+## Changelog v1.4.2 - May 2026
+- Coming soon (this is a test commit, checking webhook to railway working or not)
+
 ## Changelog v1.4.1 — May 2026
 
 ### Bug Fixes
